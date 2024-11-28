@@ -9,15 +9,13 @@ $$\begin{align*}
 \dot{S_v} &= m S_j + v(t) S_f - S_v(\beta_v  I_f + f(t) + \mu)\\
 \dot{S_f} &= f(t) S_v - S_f(\beta_f I_f + v(t) + \mu)\\
 \dot{I_j} &= \beta_j S_j I_f - I_j(m + \mu)\\
-\dot{I_v} &= m I_j + \beta_v S_v I_f  + v(t)I_f - I_v(f(t) + \mu)\\
-\dot{I_f} &= f(t) I_v + I_f(\beta_f S_f - v(t) - \mu) 
+\dot{I_v} &= m I_j + \beta_v S_v I_f  + v(t)_I I_f - I_v(f(t)_I + \mu)\\
+\dot{I_f} &= f(t)_I I_v + I_f(\beta_f S_f - v(t)_I - \mu) 
 \end{align*}$$
 
 The system can also be represented by the following diagram:
 
-<img width="851" alt="image" src="https://github.com/user-attachments/assets/faf4d0fd-8da9-450b-a370-a3bf5e64c31f">
-
-
+<img width="856" alt="image" src="https://github.com/user-attachments/assets/de0d1ed2-6349-493d-82e1-43fe0c777f71">
 
 For example:
 
