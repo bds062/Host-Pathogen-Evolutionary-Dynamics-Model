@@ -6,6 +6,6 @@ For example:
 
 ![image](https://github.com/user-attachments/assets/b5abef7a-3445-481b-a6ac-7f4087dcba5f)
 
-![image](https://github.com/user-attachments/assets/42e6e2de-c8ee-4aac-a2c3-198c6b7929e4)
+<img width="698" alt="image" src="https://github.com/user-attachments/assets/a7a4c725-8758-4a50-83b0-7a8e73cf53ec">
 
-![image](https://github.com/user-attachments/assets/c600c7f1-e025-4518-b345-095b42c30ae9)
+<img width="695" alt="image" src="https://github.com/user-attachments/assets/202ce9b2-5d57-4a27-b301-4b9bb3dc1392">
