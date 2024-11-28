@@ -4,14 +4,14 @@ This repository contains the code used to generate population graphs and raster 
 
 The model itself is represented by the following system of differential equations:
 
-\begin{align*}
+$$\begin{align*}
 \dot{S_j} &= b(t)S_f - S_j(\beta_j I_f + \gamma N + m + \mu)\\
 \dot{S_v} &= m S_j + v(t) S_f - S_v(\beta_v  I_f + f(t) + \mu)\\
 \dot{S_f} &= f(t) S_v - S_f(\beta_f I_f + v(t) + \mu)\\
 \dot{I_j} &= \beta_j S_j I_f - I_j(m + \mu)\\
 \dot{I_v} &= m I_j + \beta_v S_v I_f  + v(t)I_f - I_v(f(t) + \mu)\\
 \dot{I_f} &= f(t) I_v + I_f(\beta_f S_f - v(t) - \mu) 
-\end{align*}
+\end{align*}$$
 
 The system can also be represented by the following diagram:
 
