@@ -15,7 +15,8 @@ The model itself is represented by the following system of differential equation
 
 The system can also be represented by the following diagram:
 
-![SIModel](https://github.com/user-attachments/assets/f8842297-cc1c-4565-af8c-2f8b5b7b46d4)
+<img width="851" alt="image" src="https://github.com/user-attachments/assets/faf4d0fd-8da9-450b-a370-a3bf5e64c31f">
+
 
 
 For example:
