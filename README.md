@@ -15,7 +15,7 @@ $$\begin{align*}
 
 The system can also be represented by the following diagram:
 
-<img width="856" alt="image" src="https://github.com/user-attachments/assets/de0d1ed2-6349-493d-82e1-43fe0c777f71">
+<img width="852" alt="image" src="https://github.com/user-attachments/assets/fd5890a1-25bb-449b-b6a3-91de70949038">
 
 For example:
 
