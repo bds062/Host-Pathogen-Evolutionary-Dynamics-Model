@@ -86,7 +86,7 @@ def run_single_simulation(args):
         setattr(model, param2_name, param2_val)
     if (param1_name=='infected_time' and param2_name=='infected_time2') or (param1_name=='infected_time2' and param2_name=='infected_time'):
         if param1_val<param2_val:
-            print("Skipping invalid combination where infected_time < infected_time2")
+            # print("Skipping invalid combination where infected_time < infected_time2")
             return (index_info, 0.5)
     # Run simulation and evaluate
     solution = model.run_sim()
