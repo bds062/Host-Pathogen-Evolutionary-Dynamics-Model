@@ -607,8 +607,8 @@ class RasterModel:
             # vmax=1.0,   # force colormap range 0–1
         )
         plt.colorbar(label="Pathogen Prevalence")
-        plt.xlabel("Infection Genotype 1 Flowering Time")
-        plt.ylabel("Infection Genotype 2 Flowering Time")
+        plt.xlabel("Infection Genotype 2 Flowering Time")
+        plt.ylabel("Infection Genotype 1 Flowering Time")
         plt.title("Pathogen Prevalence Across Varied Seasonal Peaks")
         plt.show()
 
