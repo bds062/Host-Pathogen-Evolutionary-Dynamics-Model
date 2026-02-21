@@ -84,10 +84,16 @@ def run_single_simulation(args):
     # Set param2 if provided
     if param2_val is not None and param2_name is not None:
         setattr(model, param2_name, param2_val)
+    
+    # For competing genotypes, use symmetry to avoid redundant computation
+    # If we're in the lower triangle (param1 < param2), we'll compute this later from symmetry
+    # Just return None as a placeholder - the raster method will fill it in
     if (param1_name=='infected_time' and param2_name=='infected_time2') or (param1_name=='infected_time2' and param2_name=='infected_time'):
-        if param1_val<param2_val:
-            # print("Skipping invalid combination where infected_time < infected_time2")
-            return (index_info, 0.5)
+        if param1_val < param2_val:
+            # Skip computation - will be filled by reflection
+            print(f"Skipping {param1_name}={param1_val}, {param2_name}={param2_val} (will use symmetry)")
+            return (index_info, None)
+    
     # Run simulation and evaluate
     solution = model.run_sim()
     model.eval = 6
@@ -561,7 +567,7 @@ class RasterModel:
                 # Place result in correct position
                 self.heatmap_data[i, j] = result
                 
-                if result > max_eval:
+                if result is not None and result > max_eval:
                     max_eval = result
                     max_p1 = self.param1_values[i]
                     max_p2 = self.param2_values[j]
@@ -577,12 +583,28 @@ class RasterModel:
                     rate = completed / elapsed if elapsed > 0 else 0
                     remaining = (total_iterations - completed) / rate if rate > 0 else 0
                     
-                    # print(f"Progress: {int(progress)}% complete "
-                    #       f"({completed}/{total_iterations}) - "
-                    #       f"Elapsed: {elapsed:.1f}s - "
-                    #       f"Est. remaining: {remaining:.1f}s")
+                    print(f"Progress: {int(progress)}% complete "
+                          f"({completed}/{total_iterations}) - "
+                          f"Elapsed: {elapsed:.1f}s - "
+                          f"Est. remaining: {remaining:.1f}s")
                     
                     last_update = int(progress / update_interval) * update_interval
+        
+        # Fill in symmetric values for competing genotype plots
+        if (self.param1_name == 'infected_time' and self.param2_name == 'infected_time2') or \
+           (self.param1_name == 'infected_time2' and self.param2_name == 'infected_time'):
+            print("\nFilling symmetric values using reflection over y=x diagonal...")
+            for i, param1_val in enumerate(self.param1_values):
+                # print(f"Processing row {i+1}/{len(self.param1_values)}...")
+                for j, param2_val in enumerate(self.param2_values):
+                    # print(f"Checking point ({param1_val}, {param2_val}) at indices ({i}, {j})...")
+                    print("cur value: ", self.heatmap_data[i, j])
+                    if self.heatmap_data[i, j] is None or np.isnan(self.heatmap_data[i, j]) or self.heatmap_data[i, j] == 0.0:
+                        # This point was skipped - use symmetry
+                        # The mirrored point is at [j, i]
+                        print("mirroring")
+                        mirrored_value = self.heatmap_data[j, i]
+                        self.heatmap_data[i, j] = 1.0 - mirrored_value
         
         total_time = time.time() - start_time
         print(f"\nRaster process complete in {total_time:.1f}s!")
