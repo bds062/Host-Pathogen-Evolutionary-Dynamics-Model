@@ -133,7 +133,12 @@ class Model():
             setattr(self, key, value)
 
     def run_sim(self):
-        self.solution = solve_ivp(self.df, self.t, self.X_0, max_step=0.1)
+        # Create an array of times to record the data (e.g., once per day)
+        # eval_times = np.arange(self.t[0], self.t[1], 1.0)
+
+        # self.solution = solve_ivp(self.df, self.t, self.X_0, max_step=0.1, t_eval=eval_times)
+        self.solution = solve_ivp(self.df, self.t, self.X_0)
+
 
         self.Sj = self.solution.y[0, :]
         self.Sv = self.solution.y[1, :]
@@ -591,20 +596,43 @@ class RasterModel:
                     last_update = int(progress / update_interval) * update_interval
         
         # Fill in symmetric values for competing genotype plots
+        # Fill in symmetric values for competing genotype plots
         if (self.param1_name == 'infected_time' and self.param2_name == 'infected_time2') or \
            (self.param1_name == 'infected_time2' and self.param2_name == 'infected_time'):
-            print("\nFilling symmetric values using reflection over y=x diagonal...")
+            print("\nFilling symmetric values or running missing simulations...")
+            
             for i, param1_val in enumerate(self.param1_values):
-                # print(f"Processing row {i+1}/{len(self.param1_values)}...")
                 for j, param2_val in enumerate(self.param2_values):
-                    # print(f"Checking point ({param1_val}, {param2_val}) at indices ({i}, {j})...")
-                    print("cur value: ", self.heatmap_data[i, j])
-                    if self.heatmap_data[i, j] is None or np.isnan(self.heatmap_data[i, j]) or self.heatmap_data[i, j] == 0.0:
-                        # This point was skipped - use symmetry
-                        # The mirrored point is at [j, i]
-                        print("mirroring")
-                        mirrored_value = self.heatmap_data[j, i]
-                        self.heatmap_data[i, j] = 1.0 - mirrored_value
+                    
+                    cur_val = self.heatmap_data[i, j]
+                    
+                    # 1. Check if the current point is empty/skipped
+                    if cur_val is None or np.isnan(cur_val) or cur_val == 0.0:
+                        
+                        # 2. Safely try to get the mirrored value (avoids IndexError on non-square arrays)
+                        mirrored_value = None
+                        if j < len(self.param1_values) and i < len(self.param2_values):
+                            mirrored_value = self.heatmap_data[j, i]
+                            
+                        # 3. If the mirror has data, use the reflection
+                        if mirrored_value is not None and not np.isnan(mirrored_value) and mirrored_value != 0.0:
+                            # print(f"Mirroring point for ({param1_val}, {param2_val})")
+                            self.heatmap_data[i, j] = 1.0 - mirrored_value
+                            
+                        # 4. FALLBACK: No mirror exists. Run the simulation directly here.
+                        else:
+                            print(f"No mirror for ({param1_val:.1f}, {param2_val:.1f}). Running simulation...")
+                            
+                            # Create a localized model to bypass the auto-skip in the worker function
+                            fallback_model = Model(**model_kwargs)
+                            setattr(fallback_model, self.param1_name, param1_val)
+                            setattr(fallback_model, self.param2_name, param2_val)
+                            
+                            solution = fallback_model.run_sim()
+                            fallback_model.eval = 6
+                            sim_result = fallback_model.evaluate(solution)
+                            
+                            self.heatmap_data[i, j] = sim_result
         
         total_time = time.time() - start_time
         print(f"\nRaster process complete in {total_time:.1f}s!")
