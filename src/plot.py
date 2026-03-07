@@ -25,14 +25,14 @@ def run_single_simulation(args):
     if (param1_name == 'infected_time' and param2_name == 'infected_time2') or \
        (param1_name == 'infected_time2' and param2_name == 'infected_time'):
         if param1_val < param2_val:
-            print(f"Skipping {param1_name}={param1_val}, {param2_name}={param2_val} (will use symmetry)")
+            # print(f"Skipping {param1_name}={param1_val}, {param2_name}={param2_val} (will use symmetry)")
             return (index_info, None)
 
     solution = model.run_sim()
     model.eval = 6
     result = model.evaluate(solution)
 
-    print(f"Completed simulation for {param1_name}={param1_val}, {param2_name}={param2_val} with result={result}")
+    # print(f"Completed simulation for {param1_name}={param1_val}, {param2_name}={param2_val} with result={result}")
     return (index_info, result)
 
 class GraphModel:
@@ -228,7 +228,7 @@ class RasterModel:
         with Pool(processes=num_processes) as pool:
             completed = 0
             last_update = 0
-            update_interval = 5  # Update every 5%
+            update_interval = 25  # Update every 25%
             
             print(f"Progress: 0% complete")
             
@@ -266,8 +266,8 @@ class RasterModel:
         
         total_time = time.time() - start_time
         print(f"\n1D sweep complete in {total_time:.1f}s!")
-        print(f"Max value: {max_eval}")
-        print(f"At {param_name} = {max_param}")
+        # print(f"Max value: {max_eval}")
+        # print(f"At {param_name} = {max_param}")
         
         return self.plot_data_1d
 
@@ -352,7 +352,7 @@ class RasterModel:
         with Pool(processes=num_processes) as pool:
             completed = 0
             last_update = 0
-            update_interval = 2  # Update every 2%
+            update_interval = 25  # Update every 25%
             
             print(f"Progress: 0% complete")
             
@@ -386,7 +386,6 @@ class RasterModel:
                     
                     last_update = int(progress / update_interval) * update_interval
         
-        # Fill in symmetric values for competing genotype plots
         # Fill in symmetric values for competing genotype plots
         if (self.param1_name == 'infected_time' and self.param2_name == 'infected_time2') or \
            (self.param1_name == 'infected_time2' and self.param2_name == 'infected_time'):
@@ -424,11 +423,27 @@ class RasterModel:
                             sim_result = fallback_model.evaluate(solution)
                             
                             self.heatmap_data[i, j] = sim_result
+            
+            # Find ESS (Evolutionarily Stable Strategy) - column with lowest sum
+            column_sums = np.sum(self.heatmap_data, axis=0)
+            ess_column_idx = np.argmin(column_sums)
+            ess_flowering_time = self.param2_values[ess_column_idx]
+            print(f"\nESS (Evolutionarily Stable Strategy) found:")
+            print(f"  Column index: {ess_column_idx}")
+            print(f"  Flowering time: {ess_flowering_time:.2f} days")
+            print(f"  Column sum: {column_sums[ess_column_idx]:.4f}")
+            
+            # Store ESS info for plotting
+            self.ess_column_idx = ess_column_idx
+            self.ess_flowering_time = ess_flowering_time
+            self.is_genotype_competition = True
+        else:
+            self.is_genotype_competition = False
         
         total_time = time.time() - start_time
         print(f"\nRaster process complete in {total_time:.1f}s!")
-        print(f"Max value: {max_eval}")
-        print(f"At {self.param1_name} = {max_p1} and {self.param2_name} = {max_p2}")
+        # print(f"Max value: {max_eval}")
+        # print(f"At {self.param1_name} = {max_p1} and {self.param2_name} = {max_p2}")
         
         return self.heatmap_data
 
@@ -436,20 +451,58 @@ class RasterModel:
         if self.param1_values is None or self.param2_values is None:
             raise ValueError("Both parameters must be set for heatmap. Use plot_1d() for 1D sweeps.")
         
+        # Check if this is a genotype competition plot
+        is_genotype = hasattr(self, 'is_genotype_competition') and self.is_genotype_competition
+        
         plt.figure(figsize=(8, 6))
-        plt.imshow(
-            self.heatmap_data,
-            extent=[min(self.param2_values), max(self.param2_values),
-                    min(self.param1_values), max(self.param1_values)],
-            origin="lower",
-            aspect="auto",
-            cmap="viridis",
-            # vmin=0.0,
-            # vmax=1.0,   # force colormap range 0–1
-        )
-        plt.colorbar(label="Pathogen Prevalence")
-        plt.xlabel("Infection Genotype 2 Flowering Time")
-        plt.ylabel("Infection Genotype 1 Flowering Time")
-        plt.title("Pathogen Prevalence Across Varied Seasonal Peaks")
+        
+        if is_genotype:
+            # Use diverging colormap for genotype competition
+            # Red = Genotype 1 wins (high prevalence), Blue = Genotype 2 wins (low prevalence)
+            plt.imshow(
+                self.heatmap_data,
+                extent=[min(self.param2_values), max(self.param2_values),
+                        min(self.param1_values), max(self.param1_values)],
+                origin="lower",
+                aspect="auto",
+                cmap="RdBu_r",  # _r reverses it so Red=high, Blue=low
+                vmin=0.0,
+                vmax=1.0,
+            )
+            cbar = plt.colorbar(label="Genotype Abundance")
+            
+            # Determine which genotype is which based on parameter names
+            if self.param1_name == 'infected_time':
+                genotype1_axis = 'y'
+                genotype2_axis = 'x'
+            else:  # param1_name == 'infected_time2'
+                genotype1_axis = 'x'
+                genotype2_axis = 'y'
+            
+            # Set axis labels with colors matching the colormap
+            # Red for Genotype 1, Blue for Genotype 2
+            if genotype1_axis == 'y':
+                plt.xlabel("Genotype 2 Flowering Time (days)", fontsize=12, color='#2166AC')  # Blue
+                plt.ylabel("Genotype 1 Flowering Time (days)", fontsize=12, color='#B2182B')  # Red
+            else:
+                plt.xlabel("Genotype 1 Flowering Time (days)", fontsize=12, color='#B2182B')  # Red
+                plt.ylabel("Genotype 2 Flowering Time (days)", fontsize=12, color='#2166AC')  # Blue
+            
+            plt.title("Genotype Competition: Prevalence Across Flowering Times", fontsize=14)
+            
+        else:
+            # Standard viridis colormap for non-competition plots
+            plt.imshow(
+                self.heatmap_data,
+                extent=[min(self.param2_values), max(self.param2_values),
+                        min(self.param1_values), max(self.param1_values)],
+                origin="lower",
+                aspect="auto",
+                cmap="viridis",
+            )
+            plt.colorbar(label="Pathogen Prevalence")
+            plt.xlabel(f"{self.param2_name.replace('_', ' ').title()}")
+            plt.ylabel(f"{self.param1_name.replace('_', ' ').title()}")
+            plt.title("Pathogen Prevalence Across Varied Seasonal Peaks")
+        
         plt.show()
-
