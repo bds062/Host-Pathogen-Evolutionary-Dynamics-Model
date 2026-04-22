@@ -81,8 +81,12 @@ class Model:
         return (dSj, dSv, dSf, dIj, dIv, dIf, dSd, dIj2, dIv2, dIf2)
 
     def evaluate(self, solution):
+        #allelic invasion
+        # class1_rows = [4, 5, 3]
+        # class2_rows = [7, 8, 9]
+        #normal
         class1_rows = [4, 5, 3]
-        class2_rows = [7, 8, 9]
+        class2_rows = [0, 1, 2]
 
         class1 = solution.y[class1_rows, :].sum(axis=0)
         class2 = solution.y[class2_rows, :].sum(axis=0)

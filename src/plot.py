@@ -506,3 +506,528 @@ class RasterModel:
             plt.title("Pathogen Prevalence Across Varied Seasonal Peaks")
         
         plt.show()
+
+    def plot_fig1(self, germination_values, maturity_values, bj_values,
+              maturity_labels=None, bj_labels=None,
+              colors=None, figsize=(15, 5), num_processes=None,
+              ylim=None, save_path=None, dpi=300):
+        """
+        Publication-ready three-panel figure. Each panel sweeps germination_time on the
+        x-axis with three maturation rates overlaid as lines. The three panels correspond
+        to three different transmission rates (Bj).
+
+        Args:
+            germination_values: Array of germination_time values to sweep (x-axis).
+            maturity_values:    List of exactly 3 maturity rates (per-day) for the line overlay.
+            bj_values:          List of exactly 3 Bj values, one per panel.
+            maturity_labels:    Optional list of 3 legend labels for maturity lines.
+            bj_labels:          Optional list of 3 panel subtitle strings (e.g. ["β_J = 0.1", ...]).
+            colors:             Optional list of 3 line colors for the maturity lines.
+            figsize:            Figure size tuple. Default (15, 5) suits 3 wide panels.
+            ylim:               Optional (ymin, ymax) tuple applied to all panels.
+            save_path:          If provided, saves figure to this path (e.g. 'fig1.pdf').
+            dpi:                Resolution for saved figure. Default 300.
+            num_processes:      Parallel processes. Defaults to cores.
+        """
+        if len(maturity_values) != 3:
+            raise ValueError("maturity_values must contain exactly 3 values")
+        if len(bj_values) != 3:
+            raise ValueError("bj_values must contain exactly 3 values")
+
+        if colors is None:
+            colors = ['#2563eb', '#dc2626', '#16a34a']
+        if maturity_labels is None:
+            maturity_labels = [f"Maturity = {v * 365:.1f} yr⁻¹" for v in maturity_values]
+        if bj_labels is None:
+            bj_labels = [f"$\\beta_J$ = {bj * 365:.2f} yr⁻¹" for bj in bj_values]
+        if num_processes is None:
+            num_processes = cores
+
+        germination_values = np.asarray(germination_values)
+        panel_labels = ['A', 'B', 'C']
+
+        # ── Run all sweeps ─────────────────────────────────────────────────────────
+        # Shape: [n_panels, n_maturity_values, n_germination_values]
+        all_results = []
+
+        for panel_idx, bj_val in enumerate(bj_values):
+            panel_results = []
+
+            for maturity_val in maturity_values:
+                print(f"\n--- Panel {panel_labels[panel_idx]}: "
+                    f"Bj={bj_val * 365:.3f}/yr, maturity={maturity_val * 365:.2f}/yr ---")
+
+                model_kwargs = {
+                    'Bj': bj_val,
+                    'Bv': self.model.Bv,
+                    'Bf': self.model.Bf,
+                    'births': self.model.births,
+                    'gamma': self.model.gamma,
+                    'death': self.model.death,
+                    'maturity': maturity_val,
+                    'g': self.model.g,
+                    'susceptible_time': self.model.susceptible_time,
+                    'infected_time': self.model.infected_time,
+                    'infected_time2': self.model.infected_time2,
+                    'germination_time': self.model.germination_time,
+                    'eval': self.model.eval,
+                    'X_0': self.model.X_0,
+                    't': self.model.t
+                }
+
+                args_list = [
+                    (germ_val, None, 'germination_time', None, model_kwargs, i)
+                    for i, germ_val in enumerate(germination_values)
+                ]
+
+                sweep_results = np.zeros(len(germination_values))
+                total = len(germination_values)
+                completed = 0
+                start_time = time.time()
+                last_update = 0
+
+                with Pool(processes=num_processes) as pool:
+                    for index_info, result in pool.imap(run_single_simulation, args_list):
+                        sweep_results[index_info] = result if result is not None else 0.0
+                        completed += 1
+                        progress = (completed / total) * 100
+                        if progress >= last_update + 25 or completed == total:
+                            elapsed = time.time() - start_time
+                            rate = completed / elapsed if elapsed > 0 else 1
+                            remaining = (total - completed) / rate
+                            print(f"  {int(progress)}% ({completed}/{total}) — "
+                                f"{elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining")
+                            last_update = int(progress / 25) * 25
+
+                panel_results.append(sweep_results)
+
+            all_results.append(panel_results)
+
+        # ── Publication-style rcParams ─────────────────────────────────────────────
+        plt.rcParams.update({
+            'font.family': 'sans-serif',
+            'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'font.size': 11,
+            'axes.labelsize': 12,
+            'axes.titlesize': 11,
+            'axes.linewidth': 1.2,
+            'xtick.labelsize': 10,
+            'ytick.labelsize': 10,
+            'xtick.direction': 'out',
+            'ytick.direction': 'out',
+            'xtick.major.width': 1.2,
+            'ytick.major.width': 1.2,
+            'xtick.major.size': 4,
+            'ytick.major.size': 4,
+            'legend.fontsize': 10,
+            'legend.frameon': False,
+            'lines.linewidth': 2.0,
+            'pdf.fonttype': 42,   # embeds fonts properly for journals
+            'ps.fonttype': 42,
+        })
+
+        # ── Build figure ───────────────────────────────────────────────────────────
+        fig, axes = plt.subplots(1, 3, figsize=figsize, sharey=True)
+
+        # Determine y-axis limits across all data if not specified
+        if ylim is None:
+            all_vals = np.concatenate([r for panel in all_results for r in panel])
+            ymax = np.ceil(np.nanmax(all_vals) * 20) / 20   # round up to nearest 0.05
+            ylim = (0, max(ymax, 0.05))
+
+        for col, (ax, panel_result, bj_label, panel_letter) in enumerate(
+                zip(axes, all_results, bj_labels, panel_labels)):
+
+            for sweep_results, label, color in zip(panel_result, maturity_labels, colors):
+                ax.plot(germination_values, sweep_results,
+                        label=label, color=color, linewidth=2.0, zorder=3)
+
+            # Panel letter in upper-left corner
+            ax.text(0.04, 0.96, panel_letter,
+                    transform=ax.transAxes,
+                    fontsize=13, fontweight='bold',
+                    va='top', ha='left')
+
+            # Bj subtitle below panel letter
+            ax.text(0.5, 1.04, bj_label,
+                    transform=ax.transAxes,
+                    fontsize=11, ha='center', va='bottom')
+
+            ax.set_xlim(germination_values[0], germination_values[-1])
+            ax.set_ylim(ylim)
+            ax.set_xlabel('Germination Time (day of year)', fontsize=12)
+            ax.xaxis.set_major_locator(plt.MultipleLocator(60))
+            ax.xaxis.set_minor_locator(plt.MultipleLocator(20))
+            ax.tick_params(which='minor', length=2.5, width=0.8)
+            ax.grid(True, axis='y', linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+
+            # Only leftmost panel gets a y-axis label
+            if col == 0:
+                ax.set_ylabel('Equilibrium Prevalence', fontsize=12)
+            else:
+                ax.tick_params(left=True)   # keep ticks, sharey handles labels
+
+            # Remove top and right spines
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+        # Single shared legend below the figure
+        handles, labels_leg = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels_leg,
+                loc='lower center',
+                ncol=3,
+                bbox_to_anchor=(0.5, -0.08),
+                frameon=False,
+                fontsize=11)
+
+        fig.suptitle('Equilibrium Prevalence vs Germination Timing',
+                    fontsize=13, fontweight='bold', y=1.02)
+
+        fig.tight_layout()
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+            print(f"\nFigure saved to: {save_path}")
+
+        plt.show()
+
+        # Store for downstream access
+        self.fig1_germination_values = germination_values
+        self.fig1_maturity_values = maturity_values
+        self.fig1_bj_values = bj_values
+        self.fig1_results = all_results
+
+        return all_results
+    
+    def plot_fig2(self, infected_time_values, maturity_values, germination_time_values,
+              maturity_labels=None, germination_labels=None,
+              colors=None, figsize=(15, 5), num_processes=None,
+              ylim=None, save_path=None, dpi=300):
+        """
+        Publication-ready three-panel figure. Each panel sweeps infected_time on the
+        x-axis with three maturation rates overlaid as lines. The three panels correspond
+        to three different germination_time values. A vertical dashed line on each panel
+        marks the germination pulse for that panel.
+
+        Args:
+            infected_time_values:     Array of infected_time values to sweep (x-axis, day of year).
+            maturity_values:          List of exactly 3 maturity rates (per-day) for line overlay.
+            germination_time_values:  List of exactly 3 germination_time values, one per panel.
+            maturity_labels:          Optional list of 3 legend labels for maturity lines.
+            germination_labels:       Optional list of 3 panel subtitle strings.
+            colors:                   Optional list of 3 line colors for the maturity lines.
+            figsize:                  Figure size tuple. Default (15, 5).
+            ylim:                     Optional (ymin, ymax) applied to all panels.
+            save_path:                If provided, saves figure to this path (e.g. 'fig2.pdf').
+            dpi:                      Resolution for saved figure. Default 300.
+            num_processes:            Parallel processes. Defaults to cores.
+        """
+        if len(maturity_values) != 3:
+            raise ValueError("maturity_values must contain exactly 3 values")
+        if len(germination_time_values) != 3:
+            raise ValueError("germination_time_values must contain exactly 3 values")
+
+        if colors is None:
+            colors = ['#2563eb', '#dc2626', '#16a34a']
+        if maturity_labels is None:
+            maturity_labels = [f"Maturity = {v * 365:.1f} yr⁻¹" for v in maturity_values]
+        if germination_labels is None:
+            germination_labels = [f"Germination peak = day {int(g)}" for g in germination_time_values]
+        if num_processes is None:
+            num_processes = cores
+
+        infected_time_values = np.asarray(infected_time_values)
+        panel_labels = ['A', 'B', 'C']
+
+        # ── Run all sweeps ─────────────────────────────────────────────────────────
+        # Shape: [n_panels, n_maturity_values, n_infected_time_values]
+        all_results = []
+
+        for panel_idx, germ_time in enumerate(germination_time_values):
+            panel_results = []
+
+            for maturity_val in maturity_values:
+                print(f"\n--- Panel {panel_labels[panel_idx]}: "
+                    f"germination_time={germ_time:.1f}, maturity={maturity_val * 365:.2f}/yr ---")
+
+                model_kwargs = {
+                    'Bj': self.model.Bj,
+                    'Bv': self.model.Bv,
+                    'Bf': self.model.Bf,
+                    'births': self.model.births,
+                    'gamma': self.model.gamma,
+                    'death': self.model.death,
+                    'maturity': maturity_val,
+                    'g': self.model.g,
+                    'susceptible_time': self.model.susceptible_time,
+                    'infected_time': self.model.infected_time,
+                    'infected_time2': self.model.infected_time2,
+                    'germination_time': germ_time,          # <-- fixed per panel
+                    'eval': self.model.eval,
+                    'X_0': self.model.X_0,
+                    't': self.model.t
+                }
+
+                args_list = [
+                    (inf_val, None, 'infected_time', None, model_kwargs, i)
+                    for i, inf_val in enumerate(infected_time_values)
+                ]
+
+                sweep_results = np.zeros(len(infected_time_values))
+                total = len(infected_time_values)
+                completed = 0
+                start_time = time.time()
+                last_update = 0
+
+                with Pool(processes=num_processes) as pool:
+                    for index_info, result in pool.imap(run_single_simulation, args_list):
+                        sweep_results[index_info] = result if result is not None else 0.0
+                        completed += 1
+                        progress = (completed / total) * 100
+                        if progress >= last_update + 25 or completed == total:
+                            elapsed = time.time() - start_time
+                            rate = completed / elapsed if elapsed > 0 else 1
+                            remaining = (total - completed) / rate
+                            print(f"  {int(progress)}% ({completed}/{total}) — "
+                                f"{elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining")
+                            last_update = int(progress / 25) * 25
+
+                panel_results.append(sweep_results)
+
+            all_results.append(panel_results)
+
+        # ── Publication-style rcParams ─────────────────────────────────────────────
+        plt.rcParams.update({
+            'font.family': 'sans-serif',
+            'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'font.size': 11,
+            'axes.labelsize': 12,
+            'axes.titlesize': 11,
+            'axes.linewidth': 1.2,
+            'xtick.labelsize': 10,
+            'ytick.labelsize': 10,
+            'xtick.direction': 'out',
+            'ytick.direction': 'out',
+            'xtick.major.width': 1.2,
+            'ytick.major.width': 1.2,
+            'xtick.major.size': 4,
+            'ytick.major.size': 4,
+            'legend.fontsize': 10,
+            'legend.frameon': False,
+            'lines.linewidth': 2.0,
+            'pdf.fonttype': 42,
+            'ps.fonttype': 42,
+        })
+
+        # ── Build figure ───────────────────────────────────────────────────────────
+        fig, axes = plt.subplots(1, 3, figsize=figsize, sharey=True)
+
+        # Auto y-limits from data if not specified
+        if ylim is None:
+            all_vals = np.concatenate([r for panel in all_results for r in panel])
+            ymax = np.ceil(np.nanmax(all_vals) * 20) / 20
+            ylim = (0, max(ymax, 0.05))
+
+        for col, (ax, panel_result, germ_time, germ_label, panel_letter) in enumerate(
+                zip(axes, all_results, germination_time_values, germination_labels, panel_labels)):
+
+            # Data lines
+            for sweep_results, label, color in zip(panel_result, maturity_labels, colors):
+                ax.plot(infected_time_values, sweep_results,
+                        label=label, color=color, linewidth=2.0, zorder=3)
+
+            # Vertical line marking the germination pulse for this panel
+            ax.axvline(x=germ_time,
+                    color='#444444',
+                    linewidth=1.3,
+                    linestyle='--',
+                    zorder=4,
+                    label=f'Germination pulse (day {int(germ_time)})')
+
+            # Panel letter
+            ax.text(0.04, 0.96, panel_letter,
+                    transform=ax.transAxes,
+                    fontsize=13, fontweight='bold',
+                    va='top', ha='left')
+
+            # Panel subtitle (germination time)
+            ax.text(0.5, 1.04, germ_label,
+                    transform=ax.transAxes,
+                    fontsize=11, ha='center', va='bottom')
+
+            ax.set_xlim(infected_time_values[0], infected_time_values[-1])
+            ax.set_ylim(ylim)
+            ax.set_xlabel('Infectious Flowering Time (day of year)', fontsize=12)
+            ax.xaxis.set_major_locator(plt.MultipleLocator(60))
+            ax.xaxis.set_minor_locator(plt.MultipleLocator(20))
+            ax.tick_params(which='minor', length=2.5, width=0.8)
+            ax.grid(True, axis='y', linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+
+            if col == 0:
+                ax.set_ylabel('Equilibrium Prevalence', fontsize=12)
+            else:
+                ax.tick_params(left=True)
+
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+        # Arrow label only on leftmost panel
+        axes[0].annotate('Germ.\npulse',
+            xy=(germination_time_values[0], ylim[1]),
+            xytext=(germination_time_values[0] + (infected_time_values[-1] - infected_time_values[0]) * 0.04,
+                    ylim[1] * 0.92),
+            fontsize=8.5,
+            color='#444444',
+            ha='left',
+            va='top',
+            arrowprops=dict(arrowstyle='->', color='#444444', lw=1.0))
+    
+        # Shared legend — maturity lines only (vertical line label handled by annotation)
+        maturity_handles, maturity_leg_labels = [], []
+        for sweep_results, label, color in zip(all_results[0], maturity_labels, colors):
+            maturity_handles.append(plt.Line2D([0], [0], color=color, linewidth=2.0))
+            maturity_leg_labels.append(label)
+
+        # Add germination line to legend once
+        maturity_handles.append(plt.Line2D([0], [0], color='#444444', linewidth=1.3, linestyle='--'))
+        maturity_leg_labels.append('Germination pulse')
+
+        fig.legend(maturity_handles, maturity_leg_labels,
+                loc='lower center',
+                ncol=4,
+                bbox_to_anchor=(0.5, -0.08),
+                frameon=False,
+                fontsize=11)
+
+        fig.suptitle('Equilibrium Prevalence vs Infectious Flowering Timing',
+                    fontsize=13, fontweight='bold', y=1.02)
+
+        fig.tight_layout()
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+            print(f"\nFigure saved to: {save_path}")
+
+        plt.show()
+
+        # Store for downstream access
+        self.fig2_infected_time_values = infected_time_values
+        self.fig2_maturity_values = maturity_values
+        self.fig2_germination_time_values = germination_time_values
+        self.fig2_results = all_results
+
+        return all_results
+
+    def plot_fig3(self, figsize=(7, 6), save_path=None, dpi=300):
+        """
+        Publication-ready single-panel figure plotting the Evolutionarily Stable Strategy (ESS)
+        flowering time against germination time for four maturation rates (multiples of m=4/365).
+        Data are hardcoded from simulation output. A diagonal reference line (ESS = germination
+        time) is included for interpretive reference.
+
+        Args:
+            figsize:    Figure size tuple. Default (7, 6) for a single square-ish panel.
+            save_path:  If provided, saves figure to this path (e.g. 'fig3.pdf').
+            dpi:        Resolution for saved figure. Default 300.
+        """
+        # ── Hardcoded simulation output ────────────────────────────────────────────
+        # Base maturity m = 4/365; columns are multiples of that base
+        germination_times = np.array([62.5, 92.5, 122.5, 152.5, 182.5, 212.5, 242.5, 272.5, 302.5])
+
+        ess_data = {
+            '16×': np.array([93.5897436, 121.6666667, 154.4230769, 187.1794872,
+                            215.2564103, 243.3333333, 271.4102564, 304.1666667, 336.9230769]),
+            '8×':  np.array([93.5897436, 121.6666667, 154.4230769, 187.1794872,
+                            215.2564103, 243.3333333, 276.0897436, 304.1666667, 336.9230769]),
+            '4×':  np.array([93.5897436, 126.3461538, 154.4230769, 187.1794872,
+                            215.2564103, 248.0128205, 276.0897436, 304.1666667, 336.9230769]),
+            '2×':  np.array([98.2692308, 126.3461538, 159.1025641, 187.1794872,
+                            219.9358974, 248.0128205, 276.0897436, 308.8461538, 336.9230769]),
+        }
+
+        colors = ['#2563eb', '#dc2626', '#16a34a', '#f59e0b']
+
+        # ── Publication-style rcParams ─────────────────────────────────────────────
+        plt.rcParams.update({
+            'font.family': 'sans-serif',
+            'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'font.size': 11,
+            'axes.labelsize': 12,
+            'axes.titlesize': 11,
+            'axes.linewidth': 1.2,
+            'xtick.labelsize': 10,
+            'ytick.labelsize': 10,
+            'xtick.direction': 'out',
+            'ytick.direction': 'out',
+            'xtick.major.width': 1.2,
+            'ytick.major.width': 1.2,
+            'xtick.major.size': 4,
+            'ytick.major.size': 4,
+            'legend.fontsize': 10,
+            'legend.frameon': False,
+            'lines.linewidth': 2.0,
+            'pdf.fonttype': 42,
+            'ps.fonttype': 42,
+        })
+
+        # ── Build figure ───────────────────────────────────────────────────────────
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # Diagonal reference line (ESS = germination time)
+        diag = np.array([germination_times[0], germination_times[-1]])
+        ax.plot(diag, diag,
+                color='#888888',
+                linewidth=1.2,
+                linestyle='--',
+                zorder=2,
+                label='ESS = germination time')
+
+        # ESS lines per maturity multiplier
+        for (label, ess_vals), color in zip(ess_data.items(), colors):
+            ax.plot(germination_times, ess_vals,
+                    color=color,
+                    linewidth=2.0,
+                    marker='o',
+                    markersize=5,
+                    markeredgewidth=0.8,
+                    markeredgecolor='white',
+                    zorder=3,
+                    label=f"$m$ = {label} base")
+
+        # Axis limits with a little breathing room
+        pad = 10
+        axis_min = germination_times[0] - pad
+        axis_max = germination_times[-1] + pad
+        ax.set_xlim(axis_min, axis_max)
+        ax.set_ylim(axis_min, axis_max)
+
+        ax.set_xlabel('Germination Time (day of year)', fontsize=12)
+        ax.set_ylabel('ESS Flowering Time (day of year)', fontsize=12)
+        ax.set_title('Evolutionarily Stable Infectious Flowering Time\nvs Germination Timing',
+                    fontsize=12, fontweight='bold', pad=10)
+
+        ax.xaxis.set_major_locator(plt.MultipleLocator(60))
+        ax.xaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax.yaxis.set_major_locator(plt.MultipleLocator(60))
+        ax.yaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax.tick_params(which='minor', length=2.5, width=0.8)
+
+        ax.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        ax.legend(loc='upper left', fontsize=10, frameon=False)
+
+        fig.tight_layout()
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+            print(f"\nFigure saved to: {save_path}")
+
+        plt.show()
+
+        # Store for downstream access
+        self.fig3_germination_times = germination_times
+        self.fig3_ess_data = ess_data
+
+        return ess_data
