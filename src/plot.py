@@ -6,10 +6,12 @@ from multiprocessing import Pool
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
+import matplotlib.patches as mpatches
+import matplotlib.lines as mlines
 
 from timing import (
     cores, floweringS, vegetatingS, floweringI, vegetatingI,
-    germination, tempVector
+    germination, tempVector, temp
 )
 from model import Model
 
@@ -509,21 +511,23 @@ class RasterModel:
 
     def plot_fig1(self, germination_values, maturity_values, bj_values,
               maturity_labels=None, bj_labels=None,
-              colors=None, figsize=(15, 5), num_processes=None,
+              colors=None, figsize=(10, 5), num_processes=None,
               ylim=None, save_path=None, dpi=300):
         """
-        Publication-ready three-panel figure. Each panel sweeps germination_time on the
-        x-axis with three maturation rates overlaid as lines. The three panels correspond
-        to three different transmission rates (Bj).
+        Publication-ready two-panel figure. Each panel sweeps germination_time on the
+        x-axis with three maturation rates overlaid as lines. The two panels correspond
+        to two different transmission rates (Bj). A dotted vertical line marks peak
+        flowering (day 182.5), and a gray background shading reflects the flowering
+        intensity (floweringS) across the germination-time axis.
 
         Args:
             germination_values: Array of germination_time values to sweep (x-axis).
             maturity_values:    List of exactly 3 maturity rates (per-day) for the line overlay.
-            bj_values:          List of exactly 3 Bj values, one per panel.
+            bj_values:          List of exactly 2 Bj values, one per panel.
             maturity_labels:    Optional list of 3 legend labels for maturity lines.
-            bj_labels:          Optional list of 3 panel subtitle strings (e.g. ["β_J = 0.1", ...]).
+            bj_labels:          Optional list of 2 panel subtitle strings (e.g. ["β_J = 0.1", ...]).
             colors:             Optional list of 3 line colors for the maturity lines.
-            figsize:            Figure size tuple. Default (15, 5) suits 3 wide panels.
+            figsize:            Figure size tuple. Default (10, 5) suits 2 wide panels.
             ylim:               Optional (ymin, ymax) tuple applied to all panels.
             save_path:          If provided, saves figure to this path (e.g. 'fig1.pdf').
             dpi:                Resolution for saved figure. Default 300.
@@ -531,8 +535,8 @@ class RasterModel:
         """
         if len(maturity_values) != 3:
             raise ValueError("maturity_values must contain exactly 3 values")
-        if len(bj_values) != 3:
-            raise ValueError("bj_values must contain exactly 3 values")
+        if len(bj_values) != 2:
+            raise ValueError("bj_values must contain exactly 2 values")
 
         if colors is None:
             colors = ['#2563eb', '#dc2626', '#16a34a']
@@ -544,7 +548,7 @@ class RasterModel:
             num_processes = cores
 
         germination_values = np.asarray(germination_values)
-        panel_labels = ['A', 'B', 'C']
+        panel_labels = ['A', 'B']
 
         # ── Run all sweeps ─────────────────────────────────────────────────────────
         # Shape: [n_panels, n_maturity_values, n_germination_values]
@@ -603,41 +607,68 @@ class RasterModel:
 
             all_results.append(panel_results)
 
+        # ── Precompute flowering intensity across germination-time axis ────────────
+        # floweringS takes a temperature, and temp() maps day-of-year -> temperature.
+        # We evaluate it at a fine grid to produce a smooth background gradient.
+        x_fine = np.linspace(germination_values[0], germination_values[-1], 500)
+        flowering_intensity = np.array([floweringS(temp(x)) for x in x_fine])
+
+        max_intensity = flowering_intensity.max()
+        if max_intensity > 0:
+            flowering_intensity_norm = flowering_intensity / max_intensity * 0.3
+        else:
+            flowering_intensity_norm = flowering_intensity
+
         # ── Publication-style rcParams ─────────────────────────────────────────────
         plt.rcParams.update({
             'font.family': 'sans-serif',
             'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
-            'font.size': 11,
-            'axes.labelsize': 12,
-            'axes.titlesize': 11,
+            'font.size': 12,
+            'axes.labelsize': 14,
+            'axes.titlesize': 13,
             'axes.linewidth': 1.2,
-            'xtick.labelsize': 10,
-            'ytick.labelsize': 10,
+            'xtick.labelsize': 11,
+            'ytick.labelsize': 11,
             'xtick.direction': 'out',
             'ytick.direction': 'out',
             'xtick.major.width': 1.2,
             'ytick.major.width': 1.2,
             'xtick.major.size': 4,
             'ytick.major.size': 4,
-            'legend.fontsize': 10,
+            'legend.fontsize': 11,
             'legend.frameon': False,
             'lines.linewidth': 2.0,
-            'pdf.fonttype': 42,   # embeds fonts properly for journals
+            'pdf.fonttype': 42,
             'ps.fonttype': 42,
         })
 
         # ── Build figure ───────────────────────────────────────────────────────────
-        fig, axes = plt.subplots(1, 3, figsize=figsize, sharey=True)
+        fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
 
         # Determine y-axis limits across all data if not specified
         if ylim is None:
             all_vals = np.concatenate([r for panel in all_results for r in panel])
-            ymax = np.ceil(np.nanmax(all_vals) * 20) / 20   # round up to nearest 0.05
+            ymax = np.ceil(np.nanmax(all_vals) * 20) / 20
             ylim = (0, max(ymax, 0.05))
 
         for col, (ax, panel_result, bj_label, panel_letter) in enumerate(
                 zip(axes, all_results, bj_labels, panel_labels)):
 
+            # ── Flowering background shading ───────────────────────────────────────
+            # Draw thin vertical spans whose alpha encodes floweringS(temp(x)).
+            # Using a fine grid avoids visible banding in the gradient.
+            for i in range(len(x_fine) - 1):
+                alpha = flowering_intensity_norm[i]
+                if alpha > 1e-3:
+                    ax.axvspan(x_fine[i], x_fine[i + 1],
+                               color='dimgray', alpha=alpha,
+                               linewidth=0, zorder=1)
+
+            # ── Peak-flowering dotted vertical line ────────────────────────────────
+            ax.axvline(x=182.5, color='dimgray', linestyle=':', linewidth=1.4,
+                       zorder=2)
+
+            # ── Data lines ────────────────────────────────────────────────────────
             for sweep_results, label, color in zip(panel_result, maturity_labels, colors):
                 ax.plot(germination_values, sweep_results,
                         label=label, color=color, linewidth=2.0, zorder=3)
@@ -645,43 +676,60 @@ class RasterModel:
             # Panel letter in upper-left corner
             ax.text(0.04, 1.05, panel_letter,
                     transform=ax.transAxes,
-                    fontsize=13, fontweight='bold',
+                    fontsize=14, fontweight='bold',
                     va='top', ha='left')
 
             # Bj subtitle below panel letter
             ax.text(0.5, 1.04, bj_label,
                     transform=ax.transAxes,
-                    fontsize=11, ha='center', va='bottom')
+                    fontsize=16, ha='center', va='bottom')
+
+            if col == 0:
+                ax.annotate(
+                    'Peak flowering',
+                    xy=(182.5, ylim[1] * 0.92),           # arrow tip — just below top
+                    xytext=(182.5 + 60, ylim[1] * 0.92),  # label to the right
+                    fontsize=14,
+                    color='dimgray',
+                    ha='left',
+                    va='center',
+                    arrowprops=dict(
+                        arrowstyle='->', 
+                        color='dimgray',
+                        lw=1.2,
+                    ),
+                )
 
             ax.set_xlim(germination_values[0], germination_values[-1])
             ax.set_ylim(ylim)
-            ax.set_xlabel('Germination Time (day of year)', fontsize=12)
+            # ax.set_xlabel('Germination Time (day of year)', fontsize=14)
             ax.xaxis.set_major_locator(plt.MultipleLocator(60))
             ax.xaxis.set_minor_locator(plt.MultipleLocator(20))
             ax.tick_params(which='minor', length=2.5, width=0.8)
             ax.grid(True, axis='y', linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
 
-            # Only leftmost panel gets a y-axis label
             if col == 0:
-                ax.set_ylabel('Prevalence', fontsize=12)
+                ax.set_ylabel('Prevalence', fontsize=14)
             else:
-                ax.tick_params(left=True)   # keep ticks, sharey handles labels
+                ax.tick_params(left=True)
 
-            # Remove top and right spines
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
 
-        # Single shared legend below the figure
+        fig.supxlabel('Germination Time (day of year)', fontsize=14, y=0.02)
+        # ── Shared legend ──────────────────────────────────────────────────────────
         handles, labels_leg = axes[0].get_legend_handles_labels()
-        fig.legend(handles, labels_leg,
+
+        flowering_patch = mpatches.Patch(color='dimgray', alpha=0.20,
+                                        label='Flowering season')
+
+        fig.legend(handles + [flowering_patch],
+                labels_leg + ['Flowering season'],
                 loc='lower center',
-                ncol=3,
-                bbox_to_anchor=(0.5, -0.08),
+                ncol=4,
+                bbox_to_anchor=(0.5, -0.10),
                 frameon=False,
                 fontsize=11)
-
-        # fig.suptitle('Equilibrium Prevalence vs Germination Timing',
-        #             fontsize=13, fontweight='bold', y=1.02)
 
         fig.tight_layout()
 
@@ -704,19 +752,21 @@ class RasterModel:
               colors=None, figsize=(15, 5), num_processes=None,
               ylim=None, save_path=None, dpi=300):
         """
-        Publication-ready three-panel figure. Each panel sweeps infected_time on the
-        x-axis with three maturation rates overlaid as lines. The three panels correspond
-        to three different germination_time values. A vertical dashed line on each panel
-        marks the germination pulse for that panel.
+        Publication-ready two-panel figure. Each panel sweeps infected_time on the
+        x-axis with three maturation rates overlaid as lines. The two panels correspond
+        to two different germination_time values. A vertical dashed line on each panel
+        marks the germination pulse for that panel. Pink shading encodes germination
+        intensity and gray shading encodes susceptible-flowering intensity across the
+        x-axis.
 
         Args:
             infected_time_values:     Array of infected_time values to sweep (x-axis, day of year).
             maturity_values:          List of exactly 3 maturity rates (per-day) for line overlay.
-            germination_time_values:  List of exactly 3 germination_time values, one per panel.
+            germination_time_values:  List of exactly 2 germination_time values, one per panel.
             maturity_labels:          Optional list of 3 legend labels for maturity lines.
-            germination_labels:       Optional list of 3 panel subtitle strings.
+            germination_labels:       Optional list of 2 panel subtitle strings.
             colors:                   Optional list of 3 line colors for the maturity lines.
-            figsize:                  Figure size tuple. Default (15, 5).
+            figsize:                  Figure size tuple. Default (10, 5).
             ylim:                     Optional (ymin, ymax) applied to all panels.
             save_path:                If provided, saves figure to this path (e.g. 'fig2.pdf').
             dpi:                      Resolution for saved figure. Default 300.
@@ -740,7 +790,6 @@ class RasterModel:
         panel_labels = ['A', 'B', 'C']
 
         # ── Run all sweeps ─────────────────────────────────────────────────────────
-        # Shape: [n_panels, n_maturity_values, n_infected_time_values]
         all_results = []
 
         for panel_idx, germ_time in enumerate(germination_time_values):
@@ -762,7 +811,7 @@ class RasterModel:
                     'susceptible_time': self.model.susceptible_time,
                     'infected_time': self.model.infected_time,
                     'infected_time2': self.model.infected_time2,
-                    'germination_time': germ_time,          # <-- fixed per panel
+                    'germination_time': germ_time,
                     'eval': self.model.eval,
                     'X_0': self.model.X_0,
                     't': self.model.t
@@ -796,23 +845,32 @@ class RasterModel:
 
             all_results.append(panel_results)
 
+        # ── Precompute shading intensities across the x-axis ──────────────────────
+        x_fine = np.linspace(infected_time_values[0], infected_time_values[-1], 500)
+
+        # Gray: susceptible flowering season
+        flowering_intensity = np.array([floweringS(temp(x)) for x in x_fine])
+        max_fl = flowering_intensity.max()
+        flowering_alpha = (flowering_intensity / max_fl * 0.45) if max_fl > 0 else flowering_intensity
+
+
         # ── Publication-style rcParams ─────────────────────────────────────────────
         plt.rcParams.update({
             'font.family': 'sans-serif',
             'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
-            'font.size': 11,
-            'axes.labelsize': 12,
-            'axes.titlesize': 11,
+            'font.size': 12,
+            'axes.labelsize': 14,
+            'axes.titlesize': 13,
             'axes.linewidth': 1.2,
-            'xtick.labelsize': 10,
-            'ytick.labelsize': 10,
+            'xtick.labelsize': 11,
+            'ytick.labelsize': 11,
             'xtick.direction': 'out',
             'ytick.direction': 'out',
             'xtick.major.width': 1.2,
             'ytick.major.width': 1.2,
             'xtick.major.size': 4,
             'ytick.major.size': 4,
-            'legend.fontsize': 10,
+            'legend.fontsize': 11,
             'legend.frameon': False,
             'lines.linewidth': 2.0,
             'pdf.fonttype': 42,
@@ -822,7 +880,6 @@ class RasterModel:
         # ── Build figure ───────────────────────────────────────────────────────────
         fig, axes = plt.subplots(1, 3, figsize=figsize, sharey=True)
 
-        # Auto y-limits from data if not specified
         if ylim is None:
             all_vals = np.concatenate([r for panel in all_results for r in panel])
             ymax = np.ceil(np.nanmax(all_vals) * 20) / 20
@@ -830,79 +887,104 @@ class RasterModel:
 
         for col, (ax, panel_result, germ_time, germ_label, panel_letter) in enumerate(
                 zip(axes, all_results, germination_time_values, germination_labels, panel_labels)):
+            germ_offset = 182.5 - germ_time
+            germination_intensity = np.array([germination(temp(x + germ_offset)) for x in x_fine])
+            max_germ = germination_intensity.max()
+            germination_alpha = (germination_intensity / max_germ * 0.45) if max_germ > 0 else germination_intensity
 
-            # Data lines
+            # ── Flowering shading (gray) ───────────────────────────────────────────
+            for i in range(len(x_fine) - 1):
+                if flowering_alpha[i] > 1e-3:
+                    ax.axvspan(x_fine[i], x_fine[i + 1],
+                               color='dimgray', alpha=flowering_alpha[i],
+                               linewidth=0, zorder=1)
+
+            # ── Germination shading (pink) ─────────────────────────────────────────
+            for i in range(len(x_fine) - 1):
+                if germination_alpha[i] > 1e-3:
+                    ax.axvspan(x_fine[i], x_fine[i + 1],
+                               color='#e75480', alpha=germination_alpha[i],
+                               linewidth=0, zorder=1)
+
+            # ── Data lines ────────────────────────────────────────────────────────
             for sweep_results, label, color in zip(panel_result, maturity_labels, colors):
                 ax.plot(infected_time_values, sweep_results,
                         label=label, color=color, linewidth=2.0, zorder=3)
 
-            # Vertical line marking the germination pulse for this panel
-            ax.axvline(x=germ_time,
-                    color='#444444',
-                    linewidth=1.3,
-                    linestyle='--',
-                    zorder=4,
-                    label=f'Germination pulse (day {int(germ_time)})')
+            # ── Peak vertical lines ────────────────────────────────────
+            ax.axvline(x=germ_time, color='dimgray', linewidth=1.3,
+                       linestyle='--', zorder=4)
+            ax.axvline(x=182.5, color='dimgray', linestyle='--', linewidth=1.3, zorder=4)
+
+            # Arrow annotation on left panel only
+            if col == 0:
+                # Peak germination arrow
+                ax.annotate(
+                    'Peak germination',
+                    xy=(germ_time, ylim[1] * 0.92),
+                    xytext=(182.5 + (infected_time_values[-1] - infected_time_values[0]) * 0.15,
+                            ylim[1] * 0.92),
+                    fontsize=14, color='#e75480',
+                    ha='left', va='center',
+                    arrowprops=dict(arrowstyle='->', color='#e75480', lw=1.2)
+                )
+                # Peak flowering arrow — placed lower to avoid overlap
+                ax.annotate(
+                    'Peak flowering',
+                    xy=(182.5, ylim[1] * 0.65),
+                    xytext=(182.5 + (infected_time_values[-1] - infected_time_values[0]) * 0.15,
+                            ylim[1] * 0.65),
+                    fontsize=14, color='dimgray',
+                    ha='left', va='center',
+                    arrowprops=dict(arrowstyle='->', color='dimgray', lw=1.2)
+                )
 
             # Panel letter
             ax.text(0.04, 1.05, panel_letter,
                     transform=ax.transAxes,
-                    fontsize=13, fontweight='bold',
+                    fontsize=14, fontweight='bold',
                     va='top', ha='left')
 
-            # Panel subtitle (germination time)
+            # Panel subtitle
             ax.text(0.5, 1.04, germ_label,
                     transform=ax.transAxes,
-                    fontsize=11, ha='center', va='bottom')
+                    fontsize=16, ha='center', va='bottom')
 
             ax.set_xlim(infected_time_values[0], infected_time_values[-1])
             ax.set_ylim(ylim)
-            ax.set_xlabel('Infectious Flowering Time (day of year)', fontsize=12)
             ax.xaxis.set_major_locator(plt.MultipleLocator(60))
             ax.xaxis.set_minor_locator(plt.MultipleLocator(20))
             ax.tick_params(which='minor', length=2.5, width=0.8)
             ax.grid(True, axis='y', linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
 
             if col == 0:
-                ax.set_ylabel('Prevalence', fontsize=12)
+                ax.set_ylabel('Prevalence', fontsize=14)
             else:
                 ax.tick_params(left=True)
 
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
 
-        # Arrow label only on leftmost panel
-        axes[0].annotate('Germ.\npulse',
-            xy=(germination_time_values[0], ylim[1] * 0.92),
-            xytext=(germination_time_values[0] + (infected_time_values[-1] - infected_time_values[0]) * 0.14,
-                    ylim[1] * 0.92),
-            fontsize=8.5,
-            color='#444444',
-            ha='left',
-            va='top',
-            arrowprops=dict(arrowstyle='->', color='#444444', lw=1.0))
-    
-        # Shared legend — maturity lines only (vertical line label handled by annotation)
-        maturity_handles, maturity_leg_labels = [], []
-        for sweep_results, label, color in zip(all_results[0], maturity_labels, colors):
-            maturity_handles.append(plt.Line2D([0], [0], color=color, linewidth=2.0))
-            maturity_leg_labels.append(label)
+        # ── Single centered x-axis title ───────────────────────────────────────────
+        fig.supxlabel('Infectious Flowering Time (day of year)', fontsize=14, y=0.02)
 
-        # Add germination line to legend once
-        maturity_handles.append(plt.Line2D([0], [0], color='#444444', linewidth=1.3, linestyle='--'))
-        # maturity_leg_labels.append('Germination pulse')
+        maturity_handles = [plt.Line2D([0], [0], color=c, linewidth=2.0) for c in colors]
 
-        fig.legend(maturity_handles, maturity_leg_labels,
-                loc='lower center',
-                ncol=4,
-                bbox_to_anchor=(0.5, -0.08),
-                frameon=False,
-                fontsize=11)
+        germination_patch = mpatches.Patch(color='#e75480', alpha=0.45, label='Germination season')
+        flowering_patch   = mpatches.Patch(color='dimgray',  alpha=0.45, label='Flowering season')
 
-        # fig.suptitle('Equilibrium Prevalence vs Infectious Flowering Timing',
-        #             fontsize=13, fontweight='bold', y=1.02)
+        fig.legend(
+            maturity_handles + [germination_patch, flowering_patch],
+            maturity_labels  + ['Germination season', 'Flowering season'],
+            loc='lower center',
+            ncol=5,
+            bbox_to_anchor=(0.5, -0.10),
+            frameon=False,
+            fontsize=11
+        )
 
         fig.tight_layout()
+        fig.subplots_adjust(bottom=0.12)
 
         if save_path is not None:
             fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
@@ -910,7 +992,6 @@ class RasterModel:
 
         plt.show()
 
-        # Store for downstream access
         self.fig2_infected_time_values = infected_time_values
         self.fig2_maturity_values = maturity_values
         self.fig2_germination_time_values = germination_time_values
