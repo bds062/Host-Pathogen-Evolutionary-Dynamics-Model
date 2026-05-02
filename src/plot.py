@@ -643,7 +643,7 @@ class RasterModel:
                         label=label, color=color, linewidth=2.0, zorder=3)
 
             # Panel letter in upper-left corner
-            ax.text(0.04, 0.96, panel_letter,
+            ax.text(0.04, 1.05, panel_letter,
                     transform=ax.transAxes,
                     fontsize=13, fontweight='bold',
                     va='top', ha='left')
@@ -663,7 +663,7 @@ class RasterModel:
 
             # Only leftmost panel gets a y-axis label
             if col == 0:
-                ax.set_ylabel('Equilibrium Prevalence', fontsize=12)
+                ax.set_ylabel('Prevalence', fontsize=12)
             else:
                 ax.tick_params(left=True)   # keep ticks, sharey handles labels
 
@@ -680,8 +680,8 @@ class RasterModel:
                 frameon=False,
                 fontsize=11)
 
-        fig.suptitle('Equilibrium Prevalence vs Germination Timing',
-                    fontsize=13, fontweight='bold', y=1.02)
+        # fig.suptitle('Equilibrium Prevalence vs Germination Timing',
+        #             fontsize=13, fontweight='bold', y=1.02)
 
         fig.tight_layout()
 
@@ -845,7 +845,7 @@ class RasterModel:
                     label=f'Germination pulse (day {int(germ_time)})')
 
             # Panel letter
-            ax.text(0.04, 0.96, panel_letter,
+            ax.text(0.04, 1.05, panel_letter,
                     transform=ax.transAxes,
                     fontsize=13, fontweight='bold',
                     va='top', ha='left')
@@ -864,7 +864,7 @@ class RasterModel:
             ax.grid(True, axis='y', linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
 
             if col == 0:
-                ax.set_ylabel('Equilibrium Prevalence', fontsize=12)
+                ax.set_ylabel('Prevalence', fontsize=12)
             else:
                 ax.tick_params(left=True)
 
@@ -873,8 +873,8 @@ class RasterModel:
 
         # Arrow label only on leftmost panel
         axes[0].annotate('Germ.\npulse',
-            xy=(germination_time_values[0], ylim[1]),
-            xytext=(germination_time_values[0] + (infected_time_values[-1] - infected_time_values[0]) * 0.04,
+            xy=(germination_time_values[0], ylim[1] * 0.92),
+            xytext=(germination_time_values[0] + (infected_time_values[-1] - infected_time_values[0]) * 0.14,
                     ylim[1] * 0.92),
             fontsize=8.5,
             color='#444444',
@@ -890,7 +890,7 @@ class RasterModel:
 
         # Add germination line to legend once
         maturity_handles.append(plt.Line2D([0], [0], color='#444444', linewidth=1.3, linestyle='--'))
-        maturity_leg_labels.append('Germination pulse')
+        # maturity_leg_labels.append('Germination pulse')
 
         fig.legend(maturity_handles, maturity_leg_labels,
                 loc='lower center',
@@ -899,8 +899,8 @@ class RasterModel:
                 frameon=False,
                 fontsize=11)
 
-        fig.suptitle('Equilibrium Prevalence vs Infectious Flowering Timing',
-                    fontsize=13, fontweight='bold', y=1.02)
+        # fig.suptitle('Equilibrium Prevalence vs Infectious Flowering Timing',
+        #             fontsize=13, fontweight='bold', y=1.02)
 
         fig.tight_layout()
 
