@@ -921,9 +921,9 @@ class RasterModel:
                 # Peak germination arrow
                 ax.annotate(
                     'Peak germination',
-                    xy=(germ_time, ylim[1] * 0.2),
+                    xy=(germ_time, ylim[1] * 0.92),
                     xytext=(182.5 + (infected_time_values[-1] - infected_time_values[0]) * 0.15,
-                            ylim[1] * 0.2),
+                            ylim[1] * 0.92),
                     fontsize=14, color='#e75480',
                     ha='left', va='center',
                     arrowprops=dict(arrowstyle='->', color='#e75480', lw=1.2)
@@ -931,9 +931,9 @@ class RasterModel:
                 # Peak flowering arrow — placed lower to avoid overlap
                 ax.annotate(
                     'Peak flowering',
-                    xy=(182.5, ylim[1] * 0.1),
+                    xy=(182.5, ylim[1] * 0.86),
                     xytext=(182.5 + (infected_time_values[-1] - infected_time_values[0]) * 0.15,
-                            ylim[1] * 0.1),
+                            ylim[1] * 0.86),
                     fontsize=14, color='dimgray',
                     ha='left', va='center',
                     arrowprops=dict(arrowstyle='->', color='dimgray', lw=1.2)
