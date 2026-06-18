@@ -17,14 +17,14 @@ class Model:
         self.t = (0, 365 * 400)
         
         #bruns et al dianthus params
-        self.Bj = 3.38e-4      # juvenile density-dependent transmission: s * beta_d
-        self.Bv = 3.38e-5      # vegetative adult density-dependent transmission: beta_d
-        self.Bf = 3.38e-5      # flowering adult density-dependent transmission: beta_d
-        self.births = 1.3/365      # b: establishment / new juvenile production from healthy flowering plants #DAY SCALED
-        self.gamma = 1.5e-4    # k: density-dependent competition effect
-        self.death = 0.187/365     # average of mu_f = 0.116 and mu_v = 0.258 #DAY SCALED
-        self.maturity = 4/365    # all surviving juveniles leave Sj and enter Sv in your model #DAY SCALED
-        self.g = 2/365           # seed-to-juvenile germination/establishment over the annual step #DAY SCALED
+        # self.Bj = 3.38e-4      # juvenile density-dependent transmission: s * beta_d
+        # self.Bv = 3.38e-5      # vegetative adult density-dependent transmission: beta_d
+        # self.Bf = 3.38e-5      # flowering adult density-dependent transmission: beta_d
+        # self.births = 1.3/365      # b: establishment / new juvenile production from healthy flowering plants #DAY SCALED
+        # self.gamma = 1.5e-4    # k: density-dependent competition effect
+        # self.death = 0.187/365     # average of mu_f = 0.116 and mu_v = 0.258 #DAY SCALED
+        # self.maturity = 4/365    # all surviving juveniles leave Sj and enter Sv in your model #DAY SCALED
+        # self.g = 2/365           # seed-to-juvenile germination/establishment over the annual step #DAY SCALED
 
         #slowinski et al silene params
         # self.Bj = .6/365 #(0.93+0.27)/2
@@ -37,14 +37,14 @@ class Model:
         # self.g = 2/365
 
         #default model params
-        # self.Bj = 0.2 / 365
-        # self.Bv = 0.025 / 365
-        # self.Bf = 0.025 / 365
-        # self.births = 4 / 365
-        # self.gamma = 0.0001
-        # self.death = .5 / 365
-        # self.maturity = 4 / 365
-        # self.g = 2 / 365
+        self.Bj = 0.2 / 365
+        self.Bv = 0.025 / 365
+        self.Bf = 0.025 / 365
+        self.births = 4 / 365
+        self.gamma = 0.0001
+        self.death = .5 / 365
+        self.maturity = 4 / 365
+        self.g = 2 / 365
 
         self.susceptible_time = 182.5
         self.infected_time = 182.5
