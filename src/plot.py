@@ -15,6 +15,36 @@ from timing import (
 )
 from model import Model
 
+def _compute_ess(model_kwargs, flowering_values, num_processes):
+    """Run one raster (infected_time vs infected_time2) and return the ESS flowering time.
+
+    Builds the full argument list, lets run_single_simulation skip the lower triangle
+    (infected_time < infected_time2) as usual, then fills the symmetric values and
+    returns the column with the minimum column sum.
+    """
+    n = len(flowering_values)
+    heatmap = np.zeros((n, n))
+
+    args_list = [
+        (p1, p2, 'infected_time', 'infected_time2', model_kwargs, (i, j))
+        for i, p1 in enumerate(flowering_values)
+        for j, p2 in enumerate(flowering_values)
+    ]
+
+    with Pool(processes=num_processes) as pool:
+        for (i, j), result in pool.imap(run_single_simulation, args_list):
+            if result is not None:
+                heatmap[i, j] = result
+
+    # Fill the upper triangle (i < j, which was skipped) via symmetry
+    for i in range(n):
+        for j in range(i + 1, n):
+            heatmap[i, j] = 1.0 - heatmap[j, i]
+
+    ess_idx = int(np.argmin(np.sum(heatmap, axis=0)))
+    return float(flowering_values[ess_idx])
+
+
 def run_single_simulation(args):
     param1_val, param2_val, param1_name, param2_name, model_kwargs, index_info = args
     model = Model(**model_kwargs)
@@ -72,6 +102,7 @@ class GraphModel:
         total_I = total_I1 + total_I2
         total_S = Sj + Sv + Sf
         I1_percent = (total_I1 / total_I) * 100
+        S_percent = (total_S / (total_S + total_I)) * 100
 
         fig, populationGraph = plt.subplots(figsize=(10, 10))
         populationGraph.set_title('Population Levels (SI)')
@@ -80,7 +111,7 @@ class GraphModel:
         populationGraph.plot(time_points, total_I2, label='Infected2', color=self.colIv2)
         populationGraph.set_xlabel('Time (years)')
         populationGraph.set_ylabel('Abundance')
-        populationGraph.set_ylim(0, 35)
+        # populationGraph.set_ylim(0, 35)
         populationGraph.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x / 365:.1f}"))
         populationGraph.legend()
 
@@ -113,8 +144,12 @@ class GraphModel:
 
         fig, prevalenceGraph = plt.subplots(figsize=(10, 10))
         prevalenceGraph.set_title('Genotype Frequency Over Time')
-        prevalenceGraph.fill_between(time_points, 0, I1_percent, color=self.colIf, alpha=0.7, label='Infected 1')
-        prevalenceGraph.fill_between(time_points, I1_percent, 100, color=self.colIf2, alpha=0.7, label='Infected 2')
+        #Allelic invasion
+        # prevalenceGraph.fill_between(time_points, 0, I1_percent, color=self.colIf, alpha=0.7, label='Infected 1')
+        # prevalenceGraph.fill_between(time_points, I1_percent, 100, color=self.colIf2, alpha=0.7, label='Infected 2')
+        #Normal
+        prevalenceGraph.fill_between(time_points, 0, S_percent, color=self.colSf, alpha=0.7, label='Susceptible')
+        prevalenceGraph.fill_between(time_points, S_percent, 100, color=self.colIf, alpha=0.7, label='Infecteds')
         prevalenceGraph.set_xlabel('time')
         prevalenceGraph.set_ylabel('percent prevalence')
         prevalenceGraph.set_ylim(0, 100)
@@ -1112,3 +1147,243 @@ class RasterModel:
         self.fig3_ess_data = ess_data
 
         return ess_data
+
+    def plot_fig4(self, germination_values, flowering_values,
+                  model_configs, config_labels=None, colors=None,
+                  figsize=(14, 10), num_processes=None,
+                  save_path=None, dpi=300, results_save_path=None):
+        """
+        Publication-ready figure that computes and plots the ESS infectious flowering
+        time as a function of germination time for multiple parameter sets (e.g. basic,
+        Silene latifolia, Dianthus pavonius).
+
+        For each (config, germination_time) pair a full raster of infected_time vs
+        infected_time2 is run via _compute_ess(), and the ESS is the column with the
+        minimum column sum. Results are cached in self.fig4_results and optionally saved
+        to a .npz file so expensive runs are not repeated.
+
+        The figure has two rows:
+          • Top row  — one panel per config (individual ESS vs germination-time curves).
+          • Bottom   — one comparison panel overlaying all configs on a single axis.
+
+        Args:
+            germination_values:  Array of germination_time values to sweep (x-axis,
+                                 day of year).  e.g. np.linspace(62.5, 302.5, 9).
+            flowering_values:    Array of infected_time / infected_time2 values for the
+                                 raster grid.  e.g. np.linspace(0, 365, 30).
+            model_configs:       List of dicts, each providing Model kwargs that override
+                                 self.model defaults for one scenario.  Use {} to keep
+                                 all defaults (the "basic" model).
+            config_labels:       Optional list of string labels for each config.
+            colors:              Optional list of hex/named line colors (one per config).
+            figsize:             Figure size tuple.  Default (14, 10).
+            num_processes:       Worker processes for the inner raster.  Defaults to cores.
+            save_path:           If provided, saves the figure (e.g. 'fig4.pdf').
+            dpi:                 Resolution for saved figure.  Default 300.
+            results_save_path:   If provided, saves all ESS arrays to a .npz file at
+                                 this path.  Reload with:
+                                     data = np.load(path)
+                                     ess  = data['SileneLatifolia']
+        Returns:
+            dict mapping each label to its np.array of ESS flowering-time values.
+        """
+        import matplotlib.gridspec as gridspec
+
+        n_configs = len(model_configs)
+
+        if config_labels is None:
+            config_labels = [f"Config {i + 1}" for i in range(n_configs)]
+        if colors is None:
+            palette = ['#2563eb', '#dc2626', '#16a34a', '#f59e0b', '#7c3aed']
+            colors = palette[:n_configs]
+        if num_processes is None:
+            num_processes = cores
+
+        germination_values = np.asarray(germination_values)
+        flowering_values   = np.asarray(flowering_values)
+
+        # ── Compute ESS for every (config, germination_time) pair ─────────────────
+        all_ess = {}
+
+        for cfg_idx, (config, label) in enumerate(zip(model_configs, config_labels)):
+            print(f"\n{'='*60}")
+            print(f"Config: {label}  ({cfg_idx + 1}/{n_configs})")
+            print(f"{'='*60}")
+
+            ess_values = np.zeros(len(germination_values))
+
+            for g_idx, germ_time in enumerate(germination_values):
+                print(f"\n  germination_time = {germ_time:.1f}  "
+                      f"({g_idx + 1}/{len(germination_values)})")
+
+                # Build kwargs: self.model defaults → config overrides → sweep value
+                model_kwargs = {
+                    'Bj':              self.model.Bj,
+                    'Bv':              self.model.Bv,
+                    'Bf':              self.model.Bf,
+                    'births':          self.model.births,
+                    'gamma':           self.model.gamma,
+                    'death':           self.model.death,
+                    'maturity':        self.model.maturity,
+                    'g':               self.model.g,
+                    'susceptible_time':  self.model.susceptible_time,
+                    'infected_time':     self.model.infected_time,
+                    'infected_time2':    self.model.infected_time2,
+                    'germination_time':  germ_time,
+                    'eval':            self.model.eval,
+                    'X_0':             self.model.X_0,
+                    't':               self.model.t,
+                }
+                model_kwargs.update(config)
+                model_kwargs['germination_time'] = germ_time  # always the sweep value
+
+                start = time.time()
+                ess = _compute_ess(model_kwargs, flowering_values, num_processes)
+                ess_values[g_idx] = ess
+                print(f"    ESS = {ess:.2f}  ({time.time() - start:.1f}s)")
+
+            all_ess[label] = ess_values
+
+        # ── Persist results ────────────────────────────────────────────────────────
+        self.fig4_results = {
+            'germination_values': germination_values,
+            **all_ess,
+        }
+
+        if results_save_path is not None:
+            safe = {k.replace(' ', '_').replace('.', '').replace('(', '').replace(')', ''):
+                    v for k, v in all_ess.items()}
+            np.savez(results_save_path,
+                     germination_values=germination_values, **safe)
+            print(f"\nResults saved to: {results_save_path}")
+
+        # ── Publication-style rcParams ─────────────────────────────────────────────
+        plt.rcParams.update({
+            'font.family':          'sans-serif',
+            'font.sans-serif':      ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'font.size':            11,
+            'axes.labelsize':       12,
+            'axes.titlesize':       11,
+            'axes.linewidth':       1.2,
+            'xtick.labelsize':      10,
+            'ytick.labelsize':      10,
+            'xtick.direction':      'out',
+            'ytick.direction':      'out',
+            'xtick.major.width':    1.2,
+            'ytick.major.width':    1.2,
+            'xtick.major.size':     4,
+            'ytick.major.size':     4,
+            'legend.fontsize':      10,
+            'legend.frameon':       False,
+            'lines.linewidth':      2.0,
+            'pdf.fonttype':         42,
+            'ps.fonttype':          42,
+        })
+
+        # ── Axis limits ────────────────────────────────────────────────────────────
+        pad      = 10
+        axis_min = float(germination_values[0])  - pad
+        axis_max = float(germination_values[-1]) + pad
+        diag     = np.array([germination_values[0], germination_values[-1]])
+
+        panel_letters = [chr(ord('A') + i) for i in range(n_configs + 1)]
+
+        # ── Build figure with GridSpec ─────────────────────────────────────────────
+        fig = plt.figure(figsize=figsize)
+        gs  = gridspec.GridSpec(2, n_configs, figure=fig,
+                                hspace=0.50, wspace=0.28,
+                                height_ratios=[1, 1])
+
+        # ── Top row: individual panels ─────────────────────────────────────────────
+        for col, (label, ess_vals, color, letter) in enumerate(
+                zip(config_labels, all_ess.values(), colors, panel_letters[:-1])):
+
+            ax = fig.add_subplot(gs[0, col])
+
+            # Diagonal reference line
+            ax.plot(diag, diag,
+                    color='#888888', linewidth=1.2, linestyle='--',
+                    zorder=2, label='ESS = germination time')
+
+            # ESS curve
+            ax.plot(germination_values, ess_vals,
+                    color=color, linewidth=2.0,
+                    marker='o', markersize=5,
+                    markeredgewidth=0.8, markeredgecolor='white',
+                    zorder=3)
+
+            ax.set_xlim(axis_min, axis_max)
+            ax.set_ylim(axis_min, axis_max)
+            ax.xaxis.set_major_locator(plt.MultipleLocator(60))
+            ax.xaxis.set_minor_locator(plt.MultipleLocator(20))
+            ax.yaxis.set_major_locator(plt.MultipleLocator(60))
+            ax.yaxis.set_minor_locator(plt.MultipleLocator(20))
+            ax.tick_params(which='minor', length=2.5, width=0.8)
+            ax.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+            # Panel letter (bold, upper-left)
+            ax.text(0.04, 1.10, letter,
+                    transform=ax.transAxes,
+                    fontsize=14, fontweight='bold', va='top', ha='left')
+
+            # Config label as italic subtitle
+            ax.text(0.5, 1.08, label,
+                    transform=ax.transAxes,
+                    fontsize=11, ha='center', va='bottom', style='italic')
+
+            ax.set_xlabel('Germination Time (day of year)', fontsize=11)
+            if col == 0:
+                ax.set_ylabel('ESS Flowering Time (day of year)', fontsize=12)
+
+        # ── Bottom row: comparison panel (spans all columns) ──────────────────────
+        ax_comp = fig.add_subplot(gs[1, :])
+
+        ax_comp.plot(diag, diag,
+                     color='#888888', linewidth=1.2, linestyle='--',
+                     zorder=2, label='ESS = germination time')
+
+        for label, ess_vals, color in zip(config_labels, all_ess.values(), colors):
+            ax_comp.plot(germination_values, ess_vals,
+                         color=color, linewidth=2.0,
+                         marker='o', markersize=5,
+                         markeredgewidth=0.8, markeredgecolor='white',
+                         zorder=3, label=label)
+
+        ax_comp.set_xlim(axis_min, axis_max)
+        ax_comp.set_ylim(axis_min, axis_max)
+        ax_comp.xaxis.set_major_locator(plt.MultipleLocator(60))
+        ax_comp.xaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax_comp.yaxis.set_major_locator(plt.MultipleLocator(60))
+        ax_comp.yaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax_comp.tick_params(which='minor', length=2.5, width=0.8)
+        ax_comp.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+        ax_comp.spines['top'].set_visible(False)
+        ax_comp.spines['right'].set_visible(False)
+
+        ax_comp.text(0.04, 1.07, panel_letters[n_configs],
+                     transform=ax_comp.transAxes,
+                     fontsize=14, fontweight='bold', va='top', ha='left')
+        ax_comp.text(0.5, 1.05, 'Comparison',
+                     transform=ax_comp.transAxes,
+                     fontsize=11, ha='center', va='bottom')
+
+        ax_comp.set_xlabel('Germination Time (day of year)', fontsize=12)
+        ax_comp.set_ylabel('ESS Flowering Time (day of year)', fontsize=12)
+        ax_comp.legend(loc='upper left', fontsize=10, frameon=False)
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+            print(f"\nFigure saved to: {save_path}")
+
+        plt.show()
+
+        # ── Cache for downstream access ────────────────────────────────────────────
+        self.fig4_germination_values = germination_values
+        self.fig4_flowering_values   = flowering_values
+        self.fig4_model_configs      = model_configs
+        self.fig4_config_labels      = config_labels
+        self.fig4_all_ess            = all_ess
+
+        return all_ess

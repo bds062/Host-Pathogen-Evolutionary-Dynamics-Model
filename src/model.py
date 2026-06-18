@@ -10,16 +10,35 @@ from timing import (
 
 class Model:
     def __init__(self, **kwargs):
+        #allelic invasion
         self.X_0 = (5, 0, 0, 2.5, 0, 0, 0, 2.5, 0, 0)
-        self.t = (0, 365 * 300)
+        #normal
+        # self.X_0 = (5, 0, 0, 5, 0, 0, 0, 0, 0, 0)
+        self.t = (0, 365 * 400)
 
+        #slowinski et al silene params
+        # self.Bj = .6/365 #(0.93+0.27)/2
+        # self.Bv = 0.4/365
+        # self.Bf = 0.4/365
+        # self.births = 4/365 #paper says 2/365
+        # self.gamma = 0.001
+        # self.death = .36/365
+        # self.maturity = .85/365 #(.7+.9)/2
+        # self.g = 2/365
+
+        # self.susceptible_time = 182.5
+        # self.infected_time = 182.5
+        # self.infected_time2 = 182.5
+        # self.germination_time = 182.5
+
+        #default model params
         self.Bj = 0.2 / 365
         self.Bv = 0.025 / 365
         self.Bf = 0.025 / 365
         self.births = 4 / 365
         self.gamma = 0.0001
         self.death = .5 / 365
-        self.maturity = 8 / 365
+        self.maturity = 4 / 365
         self.g = 2 / 365
 
         self.susceptible_time = 182.5
@@ -82,11 +101,11 @@ class Model:
 
     def evaluate(self, solution):
         #allelic invasion
-        # class1_rows = [4, 5, 3]
-        # class2_rows = [7, 8, 9]
-        #normal
         class1_rows = [4, 5, 3]
-        class2_rows = [0, 1, 2]
+        class2_rows = [7, 8, 9]
+        #normal
+        # class1_rows = [4, 5, 3]
+        # class2_rows = [0, 1, 2]
 
         class1 = solution.y[class1_rows, :].sum(axis=0)
         class2 = solution.y[class2_rows, :].sum(axis=0)
