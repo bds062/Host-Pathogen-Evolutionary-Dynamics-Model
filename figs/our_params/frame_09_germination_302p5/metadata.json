@@ -1,0 +1,13 @@
+{
+  "germination_time": 302.5,
+  "flowering_min": 0.0,
+  "flowering_max": 365.0,
+  "reference_sweep_min": 326,
+  "reference_sweep_max": 346,
+  "grid_size": 40,
+  "ess_flowering_time": 271.4102564102564,
+  "parameters": {
+    "Bj": 0.0010958904109589042,
+    "maturity": 0.010958904109589041
+  }
+}

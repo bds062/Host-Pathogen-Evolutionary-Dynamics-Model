@@ -106,6 +106,8 @@ class GraphModel:
 
         fig, populationGraph = plt.subplots(figsize=(10, 10))
         populationGraph.set_title('Population Levels (SI)')
+        # populationGraph.plot(time_points, Sv, label='SV', color=self.colSv)
+        # populationGraph.plot(time_points, Sf, label='Sf', color=self.colSf)
         populationGraph.plot(time_points, total_S, label='Susceptibles', color=self.colSv)
         populationGraph.plot(time_points, total_I1, label='Infected1', color=self.colIv)
         populationGraph.plot(time_points, total_I2, label='Infected2', color=self.colIv2)

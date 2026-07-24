@@ -11,9 +11,9 @@ from timing import (
 class Model:
     def __init__(self, **kwargs):
         #allelic invasion
-        self.X_0 = (5, 0, 0, 2.5, 0, 0, 0, 2.5, 0, 0)
+        # self.X_0 = (5, 0, 0, 2.5, 0, 0, 0, 2.5, 0, 0)
         #normal
-        # self.X_0 = (5, 0, 0, 5, 0, 0, 0, 0, 0, 0)
+        self.X_0 = (5, 0, 0, 5, 0, 0, 0, 0, 0, 0)
         self.t = (0, 365 * 400)
         
         #bruns et al dianthus params
@@ -106,11 +106,11 @@ class Model:
 
     def evaluate(self, solution):
         #allelic invasion
-        class1_rows = [4, 5, 3]
-        class2_rows = [7, 8, 9]
-        #normal
         # class1_rows = [4, 5, 3]
-        # class2_rows = [0, 1, 2]
+        # class2_rows = [7, 8, 9]
+        #normal
+        class1_rows = [4, 5, 3]
+        class2_rows = [0, 1, 2]
 
         class1 = solution.y[class1_rows, :].sum(axis=0)
         class2 = solution.y[class2_rows, :].sum(axis=0)

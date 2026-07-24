@@ -9,19 +9,23 @@ from matplotlib.ticker import FuncFormatter
 
 cores = mp.cpu_count()
 
-def floweringS(temp, steepness=5, threshold=25, b_max=2):
+TEMP_THRESHOLD=25
+B_MAX=.5
+STEEPNESS=.5
+
+def floweringS(temp, steepness=STEEPNESS, threshold=TEMP_THRESHOLD, b_max=B_MAX):
     return b_max / (1 + np.exp(-steepness * (temp - threshold)))
 
-def vegetatingS(temp, steepness=5, threshold=25, b_max=2):
+def vegetatingS(temp, steepness=STEEPNESS, threshold=TEMP_THRESHOLD, b_max=B_MAX):
     return b_max - b_max / (1 + np.exp(-steepness * (temp - threshold)))
 
-def floweringI(temp, steepness=5, threshold=25, b_max=2):
+def floweringI(temp, steepness=STEEPNESS, threshold=TEMP_THRESHOLD, b_max=B_MAX):
     return b_max / (1 + np.exp(-steepness * (temp - threshold)))
 
-def vegetatingI(temp, steepness=5, threshold=25, b_max=2):
+def vegetatingI(temp, steepness=STEEPNESS, threshold=TEMP_THRESHOLD, b_max=B_MAX):
     return b_max - b_max / (1 + np.exp(-steepness * (temp - threshold)))
 
-def germination(temp, steepness=5, threshold=30, b_max=1, b_min=0):
+def germination(temp, steepness=STEEPNESS, threshold=TEMP_THRESHOLD, b_max=B_MAX, b_min=0):
     return b_max / (1 + np.exp(-steepness * (temp - threshold))) + b_min
 
 def temp(t, min=0, scale=30):
