@@ -11,9 +11,9 @@ from timing import (
 class Model:
     def __init__(self, **kwargs):
         #allelic invasion
-        # self.X_0 = (5, 0, 0, 2.5, 0, 0, 0, 2.5, 0, 0)
+        self.X_0 = (5, 0, 0, 2.5, 0, 0, 0, 2.5, 0, 0)
         #normal
-        self.X_0 = (5, 0, 0, 5, 0, 0, 0, 0, 0, 0)
+        # self.X_0 = (5, 0, 0, 5, 0, 0, 0, 0, 0, 0)
         self.t = (0, 365 * 400)
         
         #bruns et al dianthus params
@@ -23,14 +23,14 @@ class Model:
         # self.births = 1.3/365      # b: establishment / new juvenile production from healthy flowering plants #DAY SCALED
         # self.gamma = 1.5e-4    # k: density-dependent competition effect
         # self.death = 0.187/365     # average of mu_f = 0.116 and mu_v = 0.258 #DAY SCALED
-        # self.maturity = 4/365    # all surviving juveniles leave Sj and enter Sv in your model #DAY SCALED
+        # self.maturity = 8/365    # all surviving juveniles leave Sj and enter Sv in your model #DAY SCALED, new default
         # self.g = 2/365           # seed-to-juvenile germination/establishment over the annual step #DAY SCALED
 
         #slowinski et al silene params
         # self.Bj = .6/365 #(0.93+0.27)/2
         # self.Bv = 0.4/365
         # self.Bf = 0.4/365
-        # self.births = 4/365 #paper says 2/365
+        # self.births = 8/365 #paper says 2/365
         # self.gamma = 0.001
         # self.death = .36/365
         # self.maturity = .85/365 #(.7+.9)/2
@@ -43,7 +43,7 @@ class Model:
         self.births = 4 / 365
         self.gamma = 0.0001
         self.death = .5 / 365
-        self.maturity = 4 / 365
+        self.maturity = 8 / 365 # new default
         self.g = 2 / 365
 
         self.susceptible_time = 182.5
@@ -87,30 +87,94 @@ class Model:
         tCI2 = temp(t + infected_offset2)
         tCG = temp(t + germination_offset)
 
-        dSd = self.births * Sf - germination(tCG) * Sd - (self.death / 4) * Sd
-        dSj = germination(tCG) * Sd - self.Bj * Sj * (If + If2) - self.gamma * Sj * (
-                Sv + Sf + Iv + If + Iv2 + If2) - self.maturity * Sj - self.death * Sj
-        dSv = self.maturity * Sj - self.Bv * Sv * (If + If2) - floweringS(tCS) * Sv + vegetatingS(
-            tCS) * Sf - self.death * Sv
-        dSf = floweringS(tCS) * Sv - self.Bf * Sf * (If + If2) - vegetatingS(tCS) * Sf - self.death * Sf
-        dIj = self.Bj * Sj * If - self.maturity * Ij - self.death * Ij
-        dIv = self.maturity * Ij + self.Bv * Sv * If - floweringI(tCI) * Iv + vegetatingI(
-            tCI) * If - self.death * Iv
-        dIf = floweringI(tCI) * Iv + self.Bf * Sf * If - vegetatingI(tCI) * If - self.death * If
-        dIj2 = self.Bj * Sj * If2 - self.maturity * Ij2 - self.death * Ij2
-        dIv2 = self.maturity * Ij2 + self.Bv * Sv * If2 - floweringI(tCI2) * Iv2 + vegetatingI(
-            tCI2) * If2 - self.death * Iv2
-        dIf2 = floweringI(tCI2) * Iv2 + self.Bf * Sf * If2 - vegetatingI(tCI2) * If2 - self.death * If2
+        total_N = (
+            Sd + Sj + Sv + Sf
+            + Ij + Iv + If
+            + Ij2 + Iv2 + If2
+        )
+
+        dSd = (
+            self.births * Sf
+            - germination(tCG) * Sd
+            - (self.death / 4) * Sd
+        )
+
+        dSj = (
+            germination(tCG) * Sd
+            - self.Bj * Sj * (If + If2)
+            - self.gamma * Sj * total_N
+            - self.maturity * Sj
+            - self.death * Sj
+        )
+
+        dSv = (
+            self.maturity * Sj
+            - self.Bv * Sv * (If + If2)
+            - floweringS(tCS) * Sv
+            + vegetatingS(tCS) * Sf
+            - self.death * Sv
+        )
+
+        dSf = (
+            floweringS(tCS) * Sv
+            - self.Bf * Sf * (If + If2)
+            - vegetatingS(tCS) * Sf
+            - self.death * Sf
+        )
+
+        dIj = (
+            self.Bj * Sj * If
+            - self.gamma * Ij * total_N
+            - self.maturity * Ij
+            - self.death * Ij
+        )
+
+        dIv = (
+            self.maturity * Ij
+            + self.Bv * Sv * If
+            - floweringI(tCI) * Iv
+            + vegetatingI(tCI) * If
+            - self.death * Iv
+        )
+
+        dIf = (
+            floweringI(tCI) * Iv
+            + self.Bf * Sf * If
+            - vegetatingI(tCI) * If
+            - self.death * If
+        )
+
+        dIj2 = (
+            self.Bj * Sj * If2
+            - self.gamma * Ij2 * total_N
+            - self.maturity * Ij2
+            - self.death * Ij2
+        )
+
+        dIv2 = (
+            self.maturity * Ij2
+            + self.Bv * Sv * If2
+            - floweringI(tCI2) * Iv2
+            + vegetatingI(tCI2) * If2
+            - self.death * Iv2
+        )
+
+        dIf2 = (
+            floweringI(tCI2) * Iv2
+            + self.Bf * Sf * If2
+            - vegetatingI(tCI2) * If2
+            - self.death * If2
+        )
 
         return (dSj, dSv, dSf, dIj, dIv, dIf, dSd, dIj2, dIv2, dIf2)
 
     def evaluate(self, solution):
         #allelic invasion
-        # class1_rows = [4, 5, 3]
-        # class2_rows = [7, 8, 9]
-        #normal
         class1_rows = [4, 5, 3]
-        class2_rows = [0, 1, 2]
+        class2_rows = [7, 8, 9]
+        #normal
+        # class1_rows = [4, 5, 3]
+        # class2_rows = [0, 1, 2]
 
         class1 = solution.y[class1_rows, :].sum(axis=0)
         class2 = solution.y[class2_rows, :].sum(axis=0)

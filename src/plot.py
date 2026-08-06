@@ -1,6 +1,9 @@
 # models_plotting.py
 import math
 import time
+import os
+import hashlib
+import json
 import numpy as np
 from multiprocessing import Pool
 
@@ -1191,6 +1194,30 @@ class RasterModel:
         """
         import matplotlib.gridspec as gridspec
 
+        def _jsonable(value):
+            if isinstance(value, np.ndarray):
+                return value.tolist()
+            if isinstance(value, (np.integer, np.floating)):
+                return value.item()
+            if isinstance(value, dict):
+                return {str(k): _jsonable(v) for k, v in sorted(value.items(), key=lambda x: str(x[0]))}
+            if isinstance(value, (list, tuple)):
+                return [_jsonable(v) for v in value]
+            return value
+
+        def _cache_key(config, label):
+            payload = {
+                'label': label,
+                'config': _jsonable(config),
+                'flowering_values': _jsonable(flowering_values),
+                'model_defaults': _jsonable({name: getattr(self.model, name) for name in (
+                    'Bj', 'Bv', 'Bf', 'births', 'gamma', 'death', 'maturity', 'g',
+                    'susceptible_time', 'infected_time', 'infected_time2', 'eval',
+                    'X_0', 't')})
+            }
+            encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+            return hashlib.sha256(encoded.encode()).hexdigest()
+
         n_configs = len(model_configs)
 
         if config_labels is None:
@@ -1204,6 +1231,74 @@ class RasterModel:
         germination_values = np.asarray(germination_values)
         flowering_values   = np.asarray(flowering_values)
 
+        cached = {}
+        cached_germination = None
+        cached_meta = {}
+        if results_save_path is not None:
+            try:
+                with np.load(results_save_path, allow_pickle=False) as data:
+                    cached_germination = np.asarray(data['germination_values'])
+                    cached = {key: np.asarray(data[key]).copy() for key in data.files
+                              if key not in ('germination_values', 'metadata')}
+                    if 'metadata' in data.files:
+                        cached_meta = json.loads(str(np.asarray(data['metadata']).item()))
+                print(f"\nLoaded checkpoint: {results_save_path}")
+            except (FileNotFoundError, KeyError, ValueError, OSError, json.JSONDecodeError):
+                pass
+
+        expected_keys = [_cache_key(config, label)
+                         for config, label in zip(model_configs, config_labels)]
+        cache_compatible = True
+        if cached_meta:
+            cache_compatible = (
+                cached_meta.get('germination_values') == _jsonable(germination_values.tolist()) and
+                cached_meta.get('cache_keys') == expected_keys)
+            print(f"Checkpoint configuration match: {'yes' if cache_compatible else 'no'}")
+            if cache_compatible:
+                completed = sum(
+                    int(np.isfinite(cached.get(
+                        label.replace(' ', '_').replace('.', '').replace('(', '').replace(')', ''),
+                        np.array([]))).sum())
+                    for label in config_labels)
+                total = n_configs * len(germination_values)
+                print(f"Checkpoint progress: {completed}/{total} points complete.")
+            else:
+                print("Checkpoint configuration does not match; starting a fresh sweep.")
+                cached = {}
+        elif cached:
+            # Legacy files do not record the model horizon or raster configuration,
+            # so their values must not be reused for a new run.
+            print("Checkpoint configuration match: no (metadata missing).")
+            print(f"Checkpoint progress: 0/{n_configs * len(germination_values)} reusable points.")
+            print("Ignoring legacy cached points.")
+            cached = {}
+            cache_compatible = False
+
+        def _cached_value(label, germ_time):
+            safe_label = label.replace(' ', '_').replace('.', '').replace('(', '').replace(')', '')
+            values = cached.get(label, cached.get(safe_label))
+            if values is None or cached_germination is None:
+                return None
+            matches = np.flatnonzero(np.isclose(cached_germination, germ_time, rtol=0, atol=1e-12))
+            if len(matches) == 0 or matches[0] >= len(values):
+                return None
+            value = float(values[matches[0]])
+            return value if np.isfinite(value) else None
+
+        def _save_checkpoint(all_ess):
+            if results_save_path is None:
+                return
+            safe = {k.replace(' ', '_').replace('.', '').replace('(', '').replace(')', ''): v
+                    for k, v in all_ess.items()}
+            metadata = {'germination_values': _jsonable(germination_values.tolist()),
+                        'cache_keys': expected_keys}
+            # Write atomically so an interruption cannot corrupt the checkpoint.
+            checkpoint_path = os.fspath(results_save_path)
+            temp_path = checkpoint_path + '.tmp.npz'
+            np.savez(temp_path, germination_values=germination_values,
+                     metadata=np.array(json.dumps(metadata)), **safe)
+            os.replace(temp_path, checkpoint_path)
+
         # ── Compute ESS for every (config, germination_time) pair ─────────────────
         all_ess = {}
 
@@ -1212,9 +1307,16 @@ class RasterModel:
             print(f"Config: {label}  ({cfg_idx + 1}/{n_configs})")
             print(f"{'='*60}")
 
-            ess_values = np.zeros(len(germination_values))
+            ess_values = np.full(len(germination_values), np.nan)
+            all_ess[label] = ess_values
 
             for g_idx, germ_time in enumerate(germination_values):
+                cached_ess = _cached_value(label, germ_time) if cache_compatible else None
+                if cached_ess is not None:
+                    ess_values[g_idx] = cached_ess
+                    print(f"\n  germination_time = {germ_time:.1f}  "
+                          f"({g_idx + 1}/{len(germination_values)}) — cached ESS = {cached_ess:.2f}")
+                    continue
                 print(f"\n  germination_time = {germ_time:.1f}  "
                       f"({g_idx + 1}/{len(germination_values)})")
 
@@ -1244,7 +1346,8 @@ class RasterModel:
                 ess_values[g_idx] = ess
                 print(f"    ESS = {ess:.2f}  ({time.time() - start:.1f}s)")
 
-            all_ess[label] = ess_values
+                # Persist this point immediately so interrupted runs resume cleanly.
+                _save_checkpoint(all_ess)
 
         # ── Persist results ────────────────────────────────────────────────────────
         self.fig4_results = {
@@ -1253,10 +1356,7 @@ class RasterModel:
         }
 
         if results_save_path is not None:
-            safe = {k.replace(' ', '_').replace('.', '').replace('(', '').replace(')', ''):
-                    v for k, v in all_ess.items()}
-            np.savez(results_save_path,
-                     germination_values=germination_values, **safe)
+            _save_checkpoint(all_ess)
             print(f"\nResults saved to: {results_save_path}")
 
         # ── Publication-style rcParams ─────────────────────────────────────────────
