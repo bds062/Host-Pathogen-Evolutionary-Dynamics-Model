@@ -4,6 +4,7 @@ import time
 import os
 import hashlib
 import json
+from datetime import datetime
 import numpy as np
 from multiprocessing import Pool
 
@@ -69,6 +70,240 @@ def run_single_simulation(args):
 
     # print(f"Completed simulation for {param1_name}={param1_val}, {param2_name}={param2_val} with result={result}")
     return (index_info, result)
+
+
+def compute_curve_peaks(x_values, curves, labels=None):
+    """
+    Find the peak (max-y) location and height of each curve in `curves`.
+
+    Args:
+        x_values: 1D array shared by every curve (e.g. germination_time sweep values).
+        curves:   List of 1D y-arrays, one per curve.
+        labels:   Optional list of names, one per curve.
+
+    Returns:
+        dict with per-curve 'peak_days' (x at the max) and 'peak_values' (the max y),
+        plus 'mean_peak_day'/'std_peak_day'/'var_peak_day' and
+        'mean_peak_value'/'std_peak_value'/'var_peak_value' across all curves.
+    """
+    x_values = np.asarray(x_values, dtype=float)
+    peak_days, peak_values = [], []
+    for y in curves:
+        y = np.asarray(y, dtype=float)
+        if np.all(np.isnan(y)):
+            peak_days.append(np.nan)
+            peak_values.append(np.nan)
+            continue
+        idx = int(np.nanargmax(y))
+        peak_days.append(float(x_values[idx]))
+        peak_values.append(float(y[idx]))
+
+    peak_days = np.array(peak_days)
+    peak_values = np.array(peak_values)
+    valid = ~np.isnan(peak_days)
+
+    return {
+        'labels': list(labels) if labels is not None else [f"curve_{i}" for i in range(len(curves))],
+        'peak_days': peak_days,
+        'peak_values': peak_values,
+        'mean_peak_day': float(np.mean(peak_days[valid])) if valid.any() else float('nan'),
+        'std_peak_day': float(np.std(peak_days[valid])) if valid.any() else float('nan'),
+        'var_peak_day': float(np.var(peak_days[valid])) if valid.any() else float('nan'),
+        'mean_peak_value': float(np.mean(peak_values[valid])) if valid.any() else float('nan'),
+        'std_peak_value': float(np.std(peak_values[valid])) if valid.any() else float('nan'),
+        'var_peak_value': float(np.var(peak_values[valid])) if valid.any() else float('nan'),
+    }
+
+
+def _peak_summary_text(fig_name, peak_info, x_label='day of year'):
+    """Build the multi-line peak-summary report shared by print_peak_summary() and
+    save_peak_summary_txt()."""
+    lines = [f"{fig_name} — peak summary ({x_label}):"]
+    for label, day, val in zip(peak_info['labels'], peak_info['peak_days'], peak_info['peak_values']):
+        lines.append(f"  {label:45s} peak {x_label} = {day:7.1f}   peak value = {val:.4f}")
+    lines.append(f"  {'-' * 70}")
+    lines.append(f"  Mean peak {x_label} = {peak_info['mean_peak_day']:.2f}   "
+                 f"Std = {peak_info['std_peak_day']:.2f}   Var = {peak_info['var_peak_day']:.2f}")
+    lines.append(f"  Mean peak value{'':<{max(len(x_label) - 5, 0)}} = {peak_info['mean_peak_value']:.4f}   "
+                 f"Std = {peak_info['std_peak_value']:.4f}   Var = {peak_info['var_peak_value']:.4f}")
+    return "\n".join(lines)
+
+
+def print_peak_summary(fig_name, peak_info, x_label='day of year'):
+    """Pretty-print the per-curve and aggregate peak stats from compute_curve_peaks()."""
+    print("\n" + _peak_summary_text(fig_name, peak_info, x_label))
+
+
+def save_peak_summary_txt(path, fig_name, peak_info, x_label='day of year'):
+    """
+    Write (or update) this figure's peak-summary block inside a shared summary.txt file.
+
+    The file holds one "=== <fig_name> ===" block per figure; calling this again with
+    the same fig_name replaces just that block, leaving other figures' blocks intact —
+    so figures can be (re)run independently and the summary stays complete and current.
+    """
+    path = os.fspath(path)
+    header = f"=== {fig_name} ==="
+    block = (f"{header}\n"
+             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+             f"{_peak_summary_text(fig_name, peak_info, x_label)}")
+
+    blocks = {}
+    order = []
+    if os.path.exists(path):
+        with open(path) as f:
+            content = f.read()
+        for raw_block in content.split("\n\n"):
+            raw_block = raw_block.strip("\n")
+            if not raw_block.strip():
+                continue
+            block_header = raw_block.splitlines()[0].strip()
+            blocks[block_header] = raw_block
+            order.append(block_header)
+
+    if header not in blocks:
+        order.append(header)
+    blocks[header] = block
+
+    known_order = [f"=== Fig {n} ===" for n in ('1', '2', '3', '4')]
+    ordered_headers = [h for h in known_order if h in blocks] + \
+                       [h for h in order if h not in known_order]
+
+    with open(path, 'w') as f:
+        f.write("\n\n".join(blocks[h] for h in ordered_headers) + "\n")
+    print(f"Peak summary written to: {path}")
+
+
+def save_figure_embedding(path, fig_name, x_name, x_values, curves, labels, extra_metadata=None):
+    """
+    Save a figure's underlying sweep curves ("embedding") plus their peak statistics
+    to a .npz file, so the data can be reloaded later (via load_figure_embedding) without
+    rerunning the simulations. Written atomically.
+
+    Returns the peak_info dict (see compute_curve_peaks) for convenience.
+    """
+    peak_info = compute_curve_peaks(x_values, curves, labels)
+
+    metadata = {
+        'fig_name': fig_name,
+        'x_name': x_name,
+        'labels': list(labels),
+        'mean_peak_day': peak_info['mean_peak_day'],
+        'std_peak_day': peak_info['std_peak_day'],
+        'var_peak_day': peak_info['var_peak_day'],
+        'mean_peak_value': peak_info['mean_peak_value'],
+        'std_peak_value': peak_info['std_peak_value'],
+        'var_peak_value': peak_info['var_peak_value'],
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
+    path = os.fspath(path)
+    tmp_path = path + '.tmp.npz'
+    np.savez(
+        tmp_path,
+        x_values=np.asarray(x_values, dtype=float),
+        curves=np.asarray(curves, dtype=float),
+        labels=np.array(list(labels)),
+        peak_days=peak_info['peak_days'],
+        peak_values=peak_info['peak_values'],
+        metadata=np.array(json.dumps(metadata)),
+    )
+    os.replace(tmp_path, path)
+    print(f"Embedding saved to: {path}")
+    return peak_info
+
+
+def load_figure_embedding(path):
+    """Reload a .npz embedding written by save_figure_embedding()."""
+    with np.load(path, allow_pickle=False) as data:
+        out = {
+            'x_values': np.asarray(data['x_values']),
+            'curves': np.asarray(data['curves']),
+            'labels': [str(l) for l in data['labels']],
+            'peak_days': np.asarray(data['peak_days']),
+            'peak_values': np.asarray(data['peak_values']),
+        }
+        if 'metadata' in data.files:
+            out['metadata'] = json.loads(str(np.asarray(data['metadata']).item()))
+    return out
+
+
+def _load_cached_curves(path, x_values, expected_labels):
+    """
+    Try to reuse a previously saved embedding instead of rerunning sweeps.
+
+    Returns the list of curves (in expected_labels order) if the cached embedding's
+    x-axis and labels match exactly, else None (caller should rerun the sweep).
+    """
+    if path is None or not os.path.exists(path):
+        return None
+    try:
+        emb = load_figure_embedding(path)
+    except (FileNotFoundError, KeyError, ValueError, OSError, json.JSONDecodeError):
+        return None
+
+    if emb['labels'] != list(expected_labels):
+        return None
+    x_values = np.asarray(x_values, dtype=float)
+    if len(emb['x_values']) != len(x_values) or not np.allclose(emb['x_values'], x_values):
+        return None
+
+    return [row for row in emb['curves']]
+
+
+def summarize_peak_embeddings(paths, source_labels=None, show_plot=True):
+    """
+    Load multiple saved figure embeddings (fig1/fig2/fig4 results_save_path outputs)
+    and display combined peak-day statistics, per source figure and overall.
+
+    Args:
+        paths:         List of .npz embedding paths.
+        source_labels: Optional display name per path (defaults to the file's stem).
+        show_plot:      If True, draws a strip plot of peak days grouped by source figure.
+
+    Returns:
+        dict with 'source_labels', 'peak_days_by_source', and 'combined_peak_days'.
+    """
+    paths = list(paths)
+    if source_labels is None:
+        source_labels = [os.path.splitext(os.path.basename(p))[0] for p in paths]
+
+    all_days = []
+    print("\nCombined peak summary across figures:")
+    for path, name in zip(paths, source_labels):
+        emb = load_figure_embedding(path)
+        days = emb['peak_days']
+        valid = days[~np.isnan(days)]
+        all_days.append(valid)
+        mean = np.mean(valid) if valid.size else float('nan')
+        std = np.std(valid) if valid.size else float('nan')
+        print(f"  {name:30s} n={len(valid):2d}  mean={mean:7.2f}  std={std:7.2f}")
+
+    combined = np.concatenate(all_days) if all_days else np.array([])
+    if combined.size:
+        print(f"  {'-' * 60}")
+        print(f"  {'ALL FIGURES':30s} n={len(combined):2d}  "
+              f"mean={np.mean(combined):7.2f}  std={np.std(combined):7.2f}")
+
+    if show_plot and combined.size:
+        plt.figure(figsize=(8, 4))
+        for i, (name, days) in enumerate(zip(source_labels, all_days)):
+            if len(days) == 0:
+                continue
+            jitter = (np.random.rand(len(days)) - 0.5) * 0.15
+            plt.scatter(np.full(len(days), i) + jitter, days, alpha=0.8, s=40, zorder=3)
+            plt.errorbar(i, np.mean(days), yerr=np.std(days), fmt='D', color='black',
+                         markersize=6, capsize=4, zorder=5)
+        plt.xticks(range(len(source_labels)), source_labels, rotation=20, ha='right')
+        plt.ylabel('Peak day of year')
+        plt.title('Peak timing across figures')
+        plt.grid(True, axis='y', alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+
+    return {'source_labels': source_labels, 'peak_days_by_source': all_days, 'combined_peak_days': combined}
+
 
 class GraphModel:
     def __init__(self, model):
@@ -552,13 +787,20 @@ class RasterModel:
     def plot_fig1(self, germination_values, maturity_values, bj_values,
               maturity_labels=None, bj_labels=None,
               colors=None, figsize=(10, 5), num_processes=None,
-              ylim=None, save_path=None, dpi=300):
+              ylim=None, save_path=None, dpi=300, results_save_path=None,
+              use_saved_embedding=False):
         """
         Publication-ready two-panel figure. Each panel sweeps germination_time on the
         x-axis with three maturation rates overlaid as lines. The two panels correspond
         to two different transmission rates (Bj). A dotted vertical line marks peak
         flowering (day 182.5), and a gray background shading reflects the flowering
         intensity (floweringS) across the germination-time axis.
+
+        After the sweeps complete, the peak (max-prevalence) germination day of each of
+        the 6 curves is printed along with its mean/stdev across curves (see
+        compute_curve_peaks / print_peak_summary). If results_save_path is given, the
+        curves and peak stats are also saved as a reloadable embedding
+        (see save_figure_embedding / load_figure_embedding / summarize_peak_embeddings).
 
         Args:
             germination_values: Array of germination_time values to sweep (x-axis).
@@ -572,6 +814,11 @@ class RasterModel:
             save_path:          If provided, saves figure to this path (e.g. 'fig1.pdf').
             dpi:                Resolution for saved figure. Default 300.
             num_processes:      Parallel processes. Defaults to cores.
+            results_save_path:  If provided, saves the sweep curves + peak stats to this
+                                 .npz path (e.g. 'fig1_embedding.npz').
+            use_saved_embedding: If True and results_save_path exists with matching
+                                 germination_values/labels, skip the sweep entirely and
+                                 rebuild the figure from the cached embedding.
         """
         if len(maturity_values) != 3:
             raise ValueError("maturity_values must contain exactly 3 values")
@@ -590,62 +837,93 @@ class RasterModel:
         germination_values = np.asarray(germination_values)
         panel_labels = ['A', 'B']
 
-        # ── Run all sweeps ─────────────────────────────────────────────────────────
+        flat_labels = [f"{bj_label} | {mat_label}"
+                        for bj_label in bj_labels
+                        for mat_label in maturity_labels]
+
+        # ── Run all sweeps (or reuse a cached embedding) ────────────────────────────
         # Shape: [n_panels, n_maturity_values, n_germination_values]
-        all_results = []
+        all_results = None
+        reused = False
 
-        for panel_idx, bj_val in enumerate(bj_values):
-            panel_results = []
+        if use_saved_embedding:
+            cached_curves = _load_cached_curves(results_save_path, germination_values, flat_labels)
+            if cached_curves is not None:
+                n_mat = len(maturity_values)
+                all_results = [cached_curves[i * n_mat:(i + 1) * n_mat] for i in range(len(bj_values))]
+                reused = True
+                print(f"Reusing cached embedding from: {results_save_path}")
+            else:
+                print("No matching cached embedding found; running sweeps.")
 
-            for maturity_val in maturity_values:
-                print(f"\n--- Panel {panel_labels[panel_idx]}: "
-                    f"Bj={bj_val * 365:.3f}/yr, maturity={maturity_val * 365:.2f}/yr ---")
+        if all_results is None:
+            all_results = []
 
-                model_kwargs = {
-                    'Bj': bj_val,
-                    'Bv': self.model.Bv,
-                    'Bf': self.model.Bf,
-                    'births': self.model.births,
-                    'gamma': self.model.gamma,
-                    'death': self.model.death,
-                    'maturity': maturity_val,
-                    'g': self.model.g,
-                    'susceptible_time': self.model.susceptible_time,
-                    'infected_time': self.model.infected_time,
-                    'infected_time2': self.model.infected_time2,
-                    'germination_time': self.model.germination_time,
-                    'eval': self.model.eval,
-                    'X_0': self.model.X_0,
-                    't': self.model.t
-                }
+            for panel_idx, bj_val in enumerate(bj_values):
+                panel_results = []
 
-                args_list = [
-                    (germ_val, None, 'germination_time', None, model_kwargs, i)
-                    for i, germ_val in enumerate(germination_values)
-                ]
+                for maturity_val in maturity_values:
+                    print(f"\n--- Panel {panel_labels[panel_idx]}: "
+                        f"Bj={bj_val * 365:.3f}/yr, maturity={maturity_val * 365:.2f}/yr ---")
 
-                sweep_results = np.zeros(len(germination_values))
-                total = len(germination_values)
-                completed = 0
-                start_time = time.time()
-                last_update = 0
+                    model_kwargs = {
+                        'Bj': bj_val,
+                        'Bv': self.model.Bv,
+                        'Bf': self.model.Bf,
+                        'births': self.model.births,
+                        'gamma': self.model.gamma,
+                        'death': self.model.death,
+                        'maturity': maturity_val,
+                        'g': self.model.g,
+                        'susceptible_time': self.model.susceptible_time,
+                        'infected_time': self.model.infected_time,
+                        'infected_time2': self.model.infected_time2,
+                        'germination_time': self.model.germination_time,
+                        'eval': self.model.eval,
+                        'X_0': self.model.X_0,
+                        't': self.model.t
+                    }
 
-                with Pool(processes=num_processes) as pool:
-                    for index_info, result in pool.imap(run_single_simulation, args_list):
-                        sweep_results[index_info] = result if result is not None else 0.0
-                        completed += 1
-                        progress = (completed / total) * 100
-                        if progress >= last_update + 25 or completed == total:
-                            elapsed = time.time() - start_time
-                            rate = completed / elapsed if elapsed > 0 else 1
-                            remaining = (total - completed) / rate
-                            print(f"  {int(progress)}% ({completed}/{total}) — "
-                                f"{elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining")
-                            last_update = int(progress / 25) * 25
+                    args_list = [
+                        (germ_val, None, 'germination_time', None, model_kwargs, i)
+                        for i, germ_val in enumerate(germination_values)
+                    ]
 
-                panel_results.append(sweep_results)
+                    sweep_results = np.zeros(len(germination_values))
+                    total = len(germination_values)
+                    completed = 0
+                    start_time = time.time()
+                    last_update = 0
 
-            all_results.append(panel_results)
+                    with Pool(processes=num_processes) as pool:
+                        for index_info, result in pool.imap(run_single_simulation, args_list):
+                            sweep_results[index_info] = result if result is not None else 0.0
+                            completed += 1
+                            progress = (completed / total) * 100
+                            if progress >= last_update + 25 or completed == total:
+                                elapsed = time.time() - start_time
+                                rate = completed / elapsed if elapsed > 0 else 1
+                                remaining = (total - completed) / rate
+                                print(f"  {int(progress)}% ({completed}/{total}) — "
+                                    f"{elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining")
+                                last_update = int(progress / 25) * 25
+
+                    panel_results.append(sweep_results)
+
+                all_results.append(panel_results)
+
+        # ── Peak summary across all 6 curves ────────────────────────────────────────
+        flat_curves = [curve for panel in all_results for curve in panel]
+        peak_info = compute_curve_peaks(germination_values, flat_curves, flat_labels)
+        print_peak_summary("Fig 1", peak_info, x_label='germination day')
+
+        if results_save_path is not None and not reused:
+            save_figure_embedding(
+                results_save_path, fig_name='fig1', x_name='germination_time',
+                x_values=germination_values, curves=flat_curves, labels=flat_labels,
+                extra_metadata={'bj_values': list(map(float, bj_values)),
+                                 'maturity_values': list(map(float, maturity_values))},
+            )
 
         # ── Precompute flowering intensity across germination-time axis ────────────
         # floweringS takes a temperature, and temp() maps day-of-year -> temperature.
@@ -784,13 +1062,15 @@ class RasterModel:
         self.fig1_maturity_values = maturity_values
         self.fig1_bj_values = bj_values
         self.fig1_results = all_results
+        self.fig1_peak_info = peak_info
 
         return all_results
     
     def plot_fig2(self, infected_time_values, maturity_values, germination_time_values,
               maturity_labels=None, germination_labels=None,
               colors=None, figsize=(15, 5), num_processes=None,
-              ylim=None, save_path=None, dpi=300):
+              ylim=None, save_path=None, dpi=300, results_save_path=None,
+              use_saved_embedding=False):
         """
         Publication-ready two-panel figure. Each panel sweeps infected_time on the
         x-axis with three maturation rates overlaid as lines. The two panels correspond
@@ -798,6 +1078,12 @@ class RasterModel:
         marks the germination pulse for that panel. Pink shading encodes germination
         intensity and gray shading encodes susceptible-flowering intensity across the
         x-axis.
+
+        After the sweeps complete, the peak (max-prevalence) infected_time day of each
+        curve is printed along with its mean/stdev across curves (see compute_curve_peaks
+        / print_peak_summary). If results_save_path is given, the curves and peak stats
+        are also saved as a reloadable embedding (see save_figure_embedding /
+        load_figure_embedding / summarize_peak_embeddings).
 
         Args:
             infected_time_values:     Array of infected_time values to sweep (x-axis, day of year).
@@ -811,6 +1097,11 @@ class RasterModel:
             save_path:                If provided, saves figure to this path (e.g. 'fig2.pdf').
             dpi:                      Resolution for saved figure. Default 300.
             num_processes:            Parallel processes. Defaults to cores.
+            results_save_path:        If provided, saves the sweep curves + peak stats to
+                                       this .npz path (e.g. 'fig2_embedding.npz').
+            use_saved_embedding:      If True and results_save_path exists with matching
+                                       infected_time_values/labels, skip the sweep entirely
+                                       and rebuild the figure from the cached embedding.
         """
         if len(maturity_values) != 3:
             raise ValueError("maturity_values must contain exactly 3 values")
@@ -829,61 +1120,93 @@ class RasterModel:
         infected_time_values = np.asarray(infected_time_values)
         panel_labels = ['A', 'B', 'C']
 
-        # ── Run all sweeps ─────────────────────────────────────────────────────────
-        all_results = []
+        flat_labels = [f"{germ_label} | {mat_label}"
+                        for germ_label in germination_labels
+                        for mat_label in maturity_labels]
 
-        for panel_idx, germ_time in enumerate(germination_time_values):
-            panel_results = []
+        # ── Run all sweeps (or reuse a cached embedding) ────────────────────────────
+        all_results = None
+        reused = False
 
-            for maturity_val in maturity_values:
-                print(f"\n--- Panel {panel_labels[panel_idx]}: "
-                    f"germination_time={germ_time:.1f}, maturity={maturity_val * 365:.2f}/yr ---")
+        if use_saved_embedding:
+            cached_curves = _load_cached_curves(results_save_path, infected_time_values, flat_labels)
+            if cached_curves is not None:
+                n_mat = len(maturity_values)
+                all_results = [cached_curves[i * n_mat:(i + 1) * n_mat]
+                                for i in range(len(germination_time_values))]
+                reused = True
+                print(f"Reusing cached embedding from: {results_save_path}")
+            else:
+                print("No matching cached embedding found; running sweeps.")
 
-                model_kwargs = {
-                    'Bj': self.model.Bj,
-                    'Bv': self.model.Bv,
-                    'Bf': self.model.Bf,
-                    'births': self.model.births,
-                    'gamma': self.model.gamma,
-                    'death': self.model.death,
-                    'maturity': maturity_val,
-                    'g': self.model.g,
-                    'susceptible_time': self.model.susceptible_time,
-                    'infected_time': self.model.infected_time,
-                    'infected_time2': self.model.infected_time2,
-                    'germination_time': germ_time,
-                    'eval': self.model.eval,
-                    'X_0': self.model.X_0,
-                    't': self.model.t
-                }
+        if all_results is None:
+            all_results = []
 
-                args_list = [
-                    (inf_val, None, 'infected_time', None, model_kwargs, i)
-                    for i, inf_val in enumerate(infected_time_values)
-                ]
+            for panel_idx, germ_time in enumerate(germination_time_values):
+                panel_results = []
 
-                sweep_results = np.zeros(len(infected_time_values))
-                total = len(infected_time_values)
-                completed = 0
-                start_time = time.time()
-                last_update = 0
+                for maturity_val in maturity_values:
+                    print(f"\n--- Panel {panel_labels[panel_idx]}: "
+                        f"germination_time={germ_time:.1f}, maturity={maturity_val * 365:.2f}/yr ---")
 
-                with Pool(processes=num_processes) as pool:
-                    for index_info, result in pool.imap(run_single_simulation, args_list):
-                        sweep_results[index_info] = result if result is not None else 0.0
-                        completed += 1
-                        progress = (completed / total) * 100
-                        if progress >= last_update + 25 or completed == total:
-                            elapsed = time.time() - start_time
-                            rate = completed / elapsed if elapsed > 0 else 1
-                            remaining = (total - completed) / rate
-                            print(f"  {int(progress)}% ({completed}/{total}) — "
-                                f"{elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining")
-                            last_update = int(progress / 25) * 25
+                    model_kwargs = {
+                        'Bj': self.model.Bj,
+                        'Bv': self.model.Bv,
+                        'Bf': self.model.Bf,
+                        'births': self.model.births,
+                        'gamma': self.model.gamma,
+                        'death': self.model.death,
+                        'maturity': maturity_val,
+                        'g': self.model.g,
+                        'susceptible_time': self.model.susceptible_time,
+                        'infected_time': self.model.infected_time,
+                        'infected_time2': self.model.infected_time2,
+                        'germination_time': germ_time,
+                        'eval': self.model.eval,
+                        'X_0': self.model.X_0,
+                        't': self.model.t
+                    }
 
-                panel_results.append(sweep_results)
+                    args_list = [
+                        (inf_val, None, 'infected_time', None, model_kwargs, i)
+                        for i, inf_val in enumerate(infected_time_values)
+                    ]
 
-            all_results.append(panel_results)
+                    sweep_results = np.zeros(len(infected_time_values))
+                    total = len(infected_time_values)
+                    completed = 0
+                    start_time = time.time()
+                    last_update = 0
+
+                    with Pool(processes=num_processes) as pool:
+                        for index_info, result in pool.imap(run_single_simulation, args_list):
+                            sweep_results[index_info] = result if result is not None else 0.0
+                            completed += 1
+                            progress = (completed / total) * 100
+                            if progress >= last_update + 25 or completed == total:
+                                elapsed = time.time() - start_time
+                                rate = completed / elapsed if elapsed > 0 else 1
+                                remaining = (total - completed) / rate
+                                print(f"  {int(progress)}% ({completed}/{total}) — "
+                                    f"{elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining")
+                                last_update = int(progress / 25) * 25
+
+                    panel_results.append(sweep_results)
+
+                all_results.append(panel_results)
+
+        # ── Peak summary across all curves ──────────────────────────────────────────
+        flat_curves = [curve for panel in all_results for curve in panel]
+        peak_info = compute_curve_peaks(infected_time_values, flat_curves, flat_labels)
+        print_peak_summary("Fig 2", peak_info, x_label='infected_time day')
+
+        if results_save_path is not None and not reused:
+            save_figure_embedding(
+                results_save_path, fig_name='fig2', x_name='infected_time',
+                x_values=infected_time_values, curves=flat_curves, labels=flat_labels,
+                extra_metadata={'germination_time_values': list(map(float, germination_time_values)),
+                                 'maturity_values': list(map(float, maturity_values))},
+            )
 
         # ── Precompute shading intensities across the x-axis ──────────────────────
         x_fine = np.linspace(infected_time_values[0], infected_time_values[-1], 500)
@@ -1036,35 +1359,85 @@ class RasterModel:
         self.fig2_maturity_values = maturity_values
         self.fig2_germination_time_values = germination_time_values
         self.fig2_results = all_results
+        self.fig2_peak_info = peak_info
 
         return all_results
 
-    def plot_fig3(self, figsize=(7, 6), save_path=None, dpi=300):
+    def plot_fig3(self, germination_values=None, flowering_values=None,
+              base_maturity=4 / 365, maturity_multipliers=(4, 8, 16, 32),
+              figsize=(7, 6), save_path=None, dpi=300, num_processes=None):
         """
         Publication-ready single-panel figure plotting the Evolutionarily Stable Strategy (ESS)
-        flowering time against germination time for four maturation rates (multiples of m=4/365).
-        Data are hardcoded from simulation output. A diagonal reference line (ESS = germination
-        time) is included for interpretive reference.
+        flowering time against germination time for four maturation rates (multiples of a base
+        maturity rate). For each (maturity multiplier, germination_time) pair, a full raster of
+        infected_time vs infected_time2 is run via _compute_ess() (the same approach used by
+        plot_fig4), and the ESS is the column with the minimum column sum. A diagonal reference
+        line (ESS = germination time) is included for interpretive reference.
 
         Args:
+            germination_values:   Array of germination_time values to sweep (x-axis, day of
+                                  year). Defaults to np.linspace(62.5, 302.5, 9).
+            flowering_values:     Array of infected_time / infected_time2 values for the inner
+                                  raster grid. Defaults to np.linspace(0, 365, 40).
+            base_maturity:        Base maturity rate (per day). Default 4/365.
+            maturity_multipliers: Multipliers of base_maturity plotted as separate lines.
+                                  Default (4, 8, 16, 32), matching the "4×"..."32×" legend.
             figsize:    Figure size tuple. Default (7, 6) for a single square-ish panel.
             save_path:  If provided, saves figure to this path (e.g. 'fig3.pdf').
             dpi:        Resolution for saved figure. Default 300.
+            num_processes: Parallel processes for the inner raster. Defaults to cores.
         """
-        # ── Hardcoded simulation output ────────────────────────────────────────────
-        # Base maturity m = 4/365; columns are multiples of that base
-        germination_times = np.array([62.5, 92.5, 122.5, 152.5, 182.5, 212.5, 242.5, 272.5, 302.5])
+        if germination_values is None:
+            germination_values = np.linspace(62.5, 302.5, 9)
+        if flowering_values is None:
+            flowering_values = np.linspace(0, 365, 40)
+        if num_processes is None:
+            num_processes = cores
 
-        ess_data = {
-            '16×': np.array([93.5897436, 121.6666667, 154.4230769, 187.1794872,
-                            215.2564103, 243.3333333, 271.4102564, 304.1666667, 336.9230769]),
-            '8×':  np.array([93.5897436, 121.6666667, 154.4230769, 187.1794872,
-                            215.2564103, 243.3333333, 276.0897436, 304.1666667, 336.9230769]),
-            '4×':  np.array([93.5897436, 126.3461538, 154.4230769, 187.1794872,
-                            215.2564103, 248.0128205, 276.0897436, 304.1666667, 336.9230769]),
-            '2×':  np.array([98.2692308, 126.3461538, 159.1025641, 187.1794872,
-                            219.9358974, 248.0128205, 276.0897436, 308.8461538, 336.9230769]),
-        }
+        germination_times = np.asarray(germination_values)
+        flowering_values = np.asarray(flowering_values)
+
+        # ── Run the ESS sweep for each maturity multiplier ──────────────────────────
+        ess_data = {}
+        for mult in maturity_multipliers:
+            label = f"{mult}×"
+            maturity_val = base_maturity * mult
+            print(f"\n--- m = {label} base (maturity = {maturity_val * 365:.2f} yr⁻¹) ---")
+
+            ess_vals = np.zeros(len(germination_times))
+            for g_idx, germ_time in enumerate(germination_times):
+                model_kwargs = {
+                    'Bj': self.model.Bj,
+                    'Bv': self.model.Bv,
+                    'Bf': self.model.Bf,
+                    'births': self.model.births,
+                    'gamma': self.model.gamma,
+                    'death': self.model.death,
+                    'maturity': maturity_val,
+                    'g': self.model.g,
+                    'susceptible_time': self.model.susceptible_time,
+                    'infected_time': self.model.infected_time,
+                    'infected_time2': self.model.infected_time2,
+                    'germination_time': germ_time,
+                    'eval': self.model.eval,
+                    'X_0': self.model.X_0,
+                    't': self.model.t,
+                }
+                start = time.time()
+                ess = _compute_ess(model_kwargs, flowering_values, num_processes)
+                ess_vals[g_idx] = ess
+                print(f"  germination_time = {germ_time:.1f}  "
+                      f"({g_idx + 1}/{len(germination_times)})  "
+                      f"ESS = {ess:.2f}  ({time.time() - start:.1f}s)")
+
+            ess_data[label] = ess_vals
+
+        # ── Peak summary across all maturity multipliers ────────────────────────────
+        # For each multiplier, the "peak" is the germination_time at which the ESS
+        # flowering time is highest.
+        peak_info = compute_curve_peaks(germination_times, list(ess_data.values()), list(ess_data.keys()))
+        print_peak_summary("Fig 3", peak_info, x_label='germination day (ESS peak)')
+        self.fig3_peak_info = peak_info
 
         colors = ['#2563eb', '#dc2626', '#16a34a', '#f59e0b']
 
@@ -1285,18 +1658,31 @@ class RasterModel:
             value = float(values[matches[0]])
             return value if np.isfinite(value) else None
 
-        def _save_checkpoint(all_ess):
+        def _save_checkpoint(all_ess, peak_summary=None):
             if results_save_path is None:
                 return
             safe = {k.replace(' ', '_').replace('.', '').replace('(', '').replace(')', ''): v
                     for k, v in all_ess.items()}
             metadata = {'germination_values': _jsonable(germination_values.tolist()),
                         'cache_keys': expected_keys}
+            extra_arrays = {}
+            if peak_summary is not None:
+                metadata['peak_summary'] = peak_summary
+                # Also write the generic embedding arrays (x_values/curves/labels/peak_*)
+                # so this file can be read by load_figure_embedding() /
+                # summarize_peak_embeddings() alongside fig1/fig2 embeddings.
+                extra_arrays = {
+                    'x_values': germination_values,
+                    'curves': np.asarray(list(all_ess.values()), dtype=float),
+                    'labels': np.array(peak_summary['labels']),
+                    'peak_days': np.asarray(peak_summary['peak_days'], dtype=float),
+                    'peak_values': np.asarray(peak_summary['peak_values'], dtype=float),
+                }
             # Write atomically so an interruption cannot corrupt the checkpoint.
             checkpoint_path = os.fspath(results_save_path)
             temp_path = checkpoint_path + '.tmp.npz'
             np.savez(temp_path, germination_values=germination_values,
-                     metadata=np.array(json.dumps(metadata)), **safe)
+                     metadata=np.array(json.dumps(metadata)), **safe, **extra_arrays)
             os.replace(temp_path, checkpoint_path)
 
         # ── Compute ESS for every (config, germination_time) pair ─────────────────
@@ -1349,14 +1735,32 @@ class RasterModel:
                 # Persist this point immediately so interrupted runs resume cleanly.
                 _save_checkpoint(all_ess)
 
+        # ── Peak summary across all configs ─────────────────────────────────────────
+        # For each config, the "peak" is the germination_time at which the ESS
+        # flowering time is highest.
+        peak_info = compute_curve_peaks(germination_values, list(all_ess.values()), config_labels)
+        print_peak_summary("Fig 4", peak_info, x_label='germination day (ESS peak)')
+
         # ── Persist results ────────────────────────────────────────────────────────
         self.fig4_results = {
             'germination_values': germination_values,
             **all_ess,
         }
+        self.fig4_peak_info = peak_info
 
         if results_save_path is not None:
-            _save_checkpoint(all_ess)
+            peak_summary = {
+                'labels': peak_info['labels'],
+                'peak_days': peak_info['peak_days'].tolist(),
+                'peak_values': peak_info['peak_values'].tolist(),
+                'mean_peak_day': peak_info['mean_peak_day'],
+                'std_peak_day': peak_info['std_peak_day'],
+                'var_peak_day': peak_info['var_peak_day'],
+                'mean_peak_value': peak_info['mean_peak_value'],
+                'std_peak_value': peak_info['std_peak_value'],
+                'var_peak_value': peak_info['var_peak_value'],
+            }
+            _save_checkpoint(all_ess, peak_summary=peak_summary)
             print(f"\nResults saved to: {results_save_path}")
 
         # ── Publication-style rcParams ─────────────────────────────────────────────
