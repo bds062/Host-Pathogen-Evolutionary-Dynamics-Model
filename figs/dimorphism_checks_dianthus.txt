@@ -1,7 +1,7 @@
-Dimorphism confirmation — seed 0.001, horizons [2000, 6000, 12000]
+Dimorphism confirmation — seed 0.001, horizons [18000]
 
 Dianthus pavonius — germination day 119.0
   convergence-stable morph 98.4 vs partner 187.2
-    seeded partner (resident   98.4): yr 2000: 0.0098  yr 6000: 0.5893  yr 12000: 0.6442
-    seeded morph   (resident  187.2): yr 2000: 0.0015  yr 6000: 0.1586  yr 12000: 0.3538
-    partner share at yr 12000: 0.6442 (from morph) vs 0.6462 (from partner)  -> NOT CONFIRMED; directions disagree, try more --years
+    seeded partner (resident   98.4): yr 18000: 0.6445
+    seeded morph   (resident  187.2): yr 18000: 0.3555
+    partner share at yr 18000: 0.6445 (from morph) vs 0.6445 (from partner)  -> DIMORPHISM CONFIRMED
