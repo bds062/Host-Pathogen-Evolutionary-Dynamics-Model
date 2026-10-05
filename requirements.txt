@@ -1,0 +1,6 @@
+# Core dependencies. Any reasonably recent version works; these are what the
+# published figures were generated with.
+numpy>=1.24        # tested with 2.3.0
+scipy>=1.10        # tested with 1.17.0 (solve_ivp DOP853, brentq)
+matplotlib>=3.7    # tested with 3.10.3
+pillow>=9.0        # tested with 11.2.1 (animated GIF assembly only)

@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 import numpy as np
 from multiprocessing import Pool
+from scipy.integrate import solve_ivp
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
@@ -49,6 +50,174 @@ def _compute_ess(model_kwargs, flowering_values, num_processes):
     return float(flowering_values[ess_idx])
 
 
+def _equilibrate_resident(args):
+    """Run genotype-1-only dynamics to its (periodic) attractor and return the final state.
+
+    This is the "let the resident equilibrate" half of a true invasion analysis:
+    genotype 2's infected classes are zeroed out in X_0 so only genotype 1 (the
+    resident, flowering at `resident_time`) is present, then the model runs for
+    `resident_years` so the seasonally-forced system settles onto its periodic
+    attractor. The final state vector is handed back as the starting point every
+    mutant strategy will later be seeded into.
+    """
+    i, resident_time, model_kwargs, resident_years = args
+    kwargs = dict(model_kwargs)
+    kwargs['infected_time'] = resident_time
+    X0 = list(kwargs['X_0'])
+    X0[7] = X0[8] = X0[9] = 0.0  # genotype 2 absent while the resident equilibrates
+    kwargs['X_0'] = tuple(X0)
+    kwargs['t'] = (0, 365 * resident_years)
+    model = Model(**kwargs)
+    model.run_sim()
+    return (i, model.solution.y[:, -1])
+
+
+def _invasion_trial(args):
+    """Seed a rare genotype-2 mutant into an equilibrated resident and measure its
+    per-year exponential growth rate while rare (positive => the mutant invades).
+
+    A single mutant-strategy flowering-infected individual (`mutant_seed`) is added
+    to the resident's equilibrium state, the model runs forward `invasion_years`
+    years, and the mutant's total abundance is sampled once per year (so estimates
+    are unbiased by the within-year seasonal cycle). The invasion fitness is the
+    slope of a log(abundance) vs. year regression over that window — i.e. the
+    mutant's growth rate while still rare, before density-dependent feedback from
+    its own numbers could bias the estimate.
+    """
+    i, j, resident_time, mutant_time, resident_state, model_kwargs, invasion_years, mutant_seed = args
+    kwargs = dict(model_kwargs)
+    kwargs['infected_time'] = resident_time
+    kwargs['infected_time2'] = mutant_time
+    model = Model(**kwargs)
+
+    X0 = np.array(resident_state, dtype=float)
+    X0[9] += mutant_seed  # a rare mutant-strategy flowering-infected individual appears
+
+    year_points = np.arange(0, invasion_years + 1) * 365.0
+    solution = solve_ivp(model.df, (0.0, 365.0 * invasion_years), X0, t_eval=year_points)
+
+    class2 = solution.y[7, :] + solution.y[8, :] + solution.y[9, :]
+    floor = mutant_seed * 1e-6
+    log_abundance = np.log(class2 + floor)
+    slope, _ = np.polyfit(np.arange(len(year_points)), log_abundance, 1)
+    return ((i, j), float(slope))
+
+
+def _compute_ess_invasion(model_kwargs, flowering_values, num_processes,
+                           resident_years=400, invasion_years=50, mutant_seed=1e-6):
+    """True sequential-invasion analogue of _compute_ess().
+
+    Unlike _compute_ess() (which starts both genotypes together at comparable
+    initial abundance and reads off their long-run relative share), this lets
+    each candidate resident strategy equilibrate alone first, then tests every
+    candidate mutant strategy's growth rate when introduced rare — the standard
+    adaptive-dynamics invasion-fitness definition. Resident equilibrations are
+    computed once per row and reused across every mutant in that row.
+
+    Returns (ess_flowering_time, growth_matrix), where growth_matrix[i, j] is the
+    per-year growth rate of a rare mutant playing flowering_values[j] invading a
+    resident equilibrated at flowering_values[i] (0 on the diagonal, not simulated).
+    The ESS is the resident strategy with the smallest worst-case invader growth
+    rate across the grid — i.e. the strategy no other candidate mutant can invade,
+    or the closest the grid has to one.
+    """
+    n = len(flowering_values)
+
+    resident_args = [(i, rt, model_kwargs, resident_years)
+                      for i, rt in enumerate(flowering_values)]
+    resident_states = [None] * n
+    with Pool(processes=num_processes) as pool:
+        for i, state in pool.imap_unordered(_equilibrate_resident, resident_args):
+            resident_states[i] = state
+
+    trial_args = [
+        (i, j, flowering_values[i], flowering_values[j], resident_states[i],
+         model_kwargs, invasion_years, mutant_seed)
+        for i in range(n) for j in range(n) if i != j
+    ]
+    growth_matrix = np.zeros((n, n))
+    with Pool(processes=num_processes) as pool:
+        for (i, j), slope in pool.imap_unordered(_invasion_trial, trial_args):
+            growth_matrix[i, j] = slope
+
+    worst_case_invader = np.array([
+        np.max(np.delete(growth_matrix[i, :], i)) for i in range(n)
+    ])
+    ess_idx = int(np.argmin(worst_case_invader))
+    return float(flowering_values[ess_idx]), growth_matrix
+
+
+def _long_invasion_trial(args):
+    """Seed a rare genotype-2 mutant into an equilibrated resident and run forward
+    `invasion_years` more years (as long as the resident's own equilibration), then
+    read off the long-run outcome directly via the model's own eval=6 metric
+    (genotype 1's share of the two genotypes, averaged over the last 20% of this
+    invasion run) instead of fitting a growth-rate slope.
+
+    This sidesteps the growth-rate regression's window-length bias entirely: rather
+    than trying to catch the mutant "while still rare" in a fixed short window (which
+    can under-measure a strongly-favored mutant's fitness if it grows past the rare
+    regime before the window ends), this just runs long enough for the two-strain
+    system to reach its actual long-run outcome — full exclusion of one strain,
+    or a stable coexistence share — and reports that outcome directly.
+    """
+    i, j, resident_time, mutant_time, resident_state, model_kwargs, invasion_years, mutant_seed = args
+    kwargs = dict(model_kwargs)
+    kwargs['infected_time'] = resident_time
+    kwargs['infected_time2'] = mutant_time
+    kwargs['eval'] = 6
+    model = Model(**kwargs)
+
+    X0 = np.array(resident_state, dtype=float)
+    X0[9] += mutant_seed  # a rare mutant-strategy flowering-infected individual appears
+
+    solution = solve_ivp(model.df, (0.0, 365.0 * invasion_years), X0)
+    resident_share = model.evaluate(solution)  # eval=6: class1 / (class1 + class2)
+    return ((i, j), float(resident_share))
+
+
+def _compute_ess_long_invasion(model_kwargs, flowering_values, num_processes,
+                                resident_years=400, invasion_years=400, mutant_seed=1e-6):
+    """Long-run-outcome analogue of _compute_ess_invasion().
+
+    Same two-stage setup (equilibrate each candidate resident alone, then seed
+    every candidate mutant in rare), but instead of measuring the mutant's growth
+    rate over a short window, this runs the invasion phase for the same duration
+    as the resident's own equilibration (`invasion_years`, default 400 — matching
+    `resident_years`) and reads off the resident's final share of the two-strain
+    population via the model's own eval=6 metric.
+
+    Returns (ess_flowering_time, share_matrix), where share_matrix[i, j] is the
+    resident's (flowering_values[i]) long-run share of the population after a rare
+    mutant playing flowering_values[j] was introduced (NaN on the diagonal, not
+    simulated — mutant == resident is not a meaningful invasion). The ESS is the
+    resident strategy that retains the highest share even against its most
+    successful invader in the grid (maximin over the worst-case competitor).
+    """
+    n = len(flowering_values)
+
+    resident_args = [(i, rt, model_kwargs, resident_years)
+                      for i, rt in enumerate(flowering_values)]
+    resident_states = [None] * n
+    with Pool(processes=num_processes) as pool:
+        for i, state in pool.imap_unordered(_equilibrate_resident, resident_args):
+            resident_states[i] = state
+
+    trial_args = [
+        (i, j, flowering_values[i], flowering_values[j], resident_states[i],
+         model_kwargs, invasion_years, mutant_seed)
+        for i in range(n) for j in range(n) if i != j
+    ]
+    share_matrix = np.full((n, n), np.nan)
+    with Pool(processes=num_processes) as pool:
+        for (i, j), share in pool.imap_unordered(_long_invasion_trial, trial_args):
+            share_matrix[i, j] = share
+
+    worst_case_share = np.array([np.nanmin(share_matrix[i, :]) for i in range(n)])
+    ess_idx = int(np.argmax(worst_case_share))
+    return float(flowering_values[ess_idx]), share_matrix
+
+
 def run_single_simulation(args):
     param1_val, param2_val, param1_name, param2_name, model_kwargs, index_info = args
     model = Model(**model_kwargs)
@@ -65,7 +234,6 @@ def run_single_simulation(args):
             return (index_info, None)
 
     solution = model.run_sim()
-    model.eval = 6
     result = model.evaluate(solution)
 
     # print(f"Completed simulation for {param1_name}={param1_val}, {param2_name}={param2_val} with result={result}")
@@ -1365,7 +1533,8 @@ class RasterModel:
 
     def plot_fig3(self, germination_values=None, flowering_values=None,
               base_maturity=4 / 365, maturity_multipliers=(4, 8, 16, 32),
-              figsize=(7, 6), save_path=None, dpi=300, num_processes=None):
+              figsize=(7, 6), save_path=None, dpi=300, num_processes=None,
+              results_save_path=None):
         """
         Publication-ready single-panel figure plotting the Evolutionarily Stable Strategy (ESS)
         flowering time against germination time for four maturation rates (multiples of a base
@@ -1386,6 +1555,9 @@ class RasterModel:
             save_path:  If provided, saves figure to this path (e.g. 'fig3.pdf').
             dpi:        Resolution for saved figure. Default 300.
             num_processes: Parallel processes for the inner raster. Defaults to cores.
+            results_save_path: If provided, checkpoints each (multiplier, germination_time)
+                               ESS value to this .npz file as it's computed, and resumes from
+                               it on a later call instead of recomputing finished points.
         """
         if germination_values is None:
             germination_values = np.linspace(62.5, 302.5, 9)
@@ -1396,16 +1568,53 @@ class RasterModel:
 
         germination_times = np.asarray(germination_values)
         flowering_values = np.asarray(flowering_values)
+        mult_labels = [f"{mult}×" for mult in maturity_multipliers]
+
+        # ── Load a previous checkpoint, if compatible ───────────────────────────────
+        cached = {}
+        cached_germination = None
+        if results_save_path is not None and os.path.exists(results_save_path):
+            try:
+                with np.load(results_save_path, allow_pickle=False) as data:
+                    cached_germination = np.asarray(data['germination_times'])
+                    if (len(cached_germination) == len(germination_times) and
+                            np.allclose(cached_germination, germination_times)):
+                        for label in mult_labels:
+                            key = f"ess_{label}"
+                            if key in data.files:
+                                cached[label] = np.asarray(data[key]).copy()
+                    else:
+                        print("Checkpoint germination_values do not match; starting a fresh sweep.")
+                print(f"\nLoaded checkpoint: {results_save_path}")
+            except (FileNotFoundError, KeyError, ValueError, OSError):
+                pass
+
+        def _save_checkpoint(ess_data_partial):
+            if results_save_path is None:
+                return
+            path = os.fspath(results_save_path)
+            tmp_path = path + '.tmp.npz'
+            arrays = {f"ess_{label}": vals for label, vals in ess_data_partial.items()}
+            np.savez(tmp_path, germination_times=germination_times,
+                     mult_labels=np.array(mult_labels), **arrays)
+            os.replace(tmp_path, path)
 
         # ── Run the ESS sweep for each maturity multiplier ──────────────────────────
         ess_data = {}
-        for mult in maturity_multipliers:
-            label = f"{mult}×"
+        for mult, label in zip(maturity_multipliers, mult_labels):
             maturity_val = base_maturity * mult
             print(f"\n--- m = {label} base (maturity = {maturity_val * 365:.2f} yr⁻¹) ---")
 
-            ess_vals = np.zeros(len(germination_times))
+            ess_vals = np.full(len(germination_times), np.nan)
+            cached_vals = cached.get(label)
+            ess_data[label] = ess_vals
             for g_idx, germ_time in enumerate(germination_times):
+                if cached_vals is not None and np.isfinite(cached_vals[g_idx]):
+                    ess_vals[g_idx] = cached_vals[g_idx]
+                    print(f"  germination_time = {germ_time:.1f}  "
+                          f"({g_idx + 1}/{len(germination_times)})  "
+                          f"ESS = {ess_vals[g_idx]:.2f}  (cached)")
+                    continue
                 model_kwargs = {
                     'Bj': self.model.Bj,
                     'Bv': self.model.Bv,
@@ -1430,7 +1639,8 @@ class RasterModel:
                       f"({g_idx + 1}/{len(germination_times)})  "
                       f"ESS = {ess:.2f}  ({time.time() - start:.1f}s)")
 
-            ess_data[label] = ess_vals
+                # Persist this point immediately so an interrupted run resumes cleanly.
+                _save_checkpoint(ess_data)
 
         # ── Peak summary across all maturity multipliers ────────────────────────────
         # For each multiplier, the "peak" is the germination_time at which the ESS
@@ -1523,6 +1733,231 @@ class RasterModel:
         # Store for downstream access
         self.fig3_germination_times = germination_times
         self.fig3_ess_data = ess_data
+
+        return ess_data
+
+    def plot_fig3_2(self, germination_values=None, flowering_values=None,
+              base_maturity=4 / 365, maturity_multipliers=(1, 2, 4, 8),
+              figsize=(7, 6), save_path=None, dpi=300, num_processes=None,
+              results_save_path=None, resident_years=400, invasion_years=400,
+              mutant_seed=1e-6):
+        """
+        Long-run-invasion counterpart to plot_fig3()/plot_fig3(maturity_multipliers=(1,2,4,8))
+        (the "fig3_1x" copy). Same single-panel layout (ESS flowering time vs germination
+        time, one line per maturity multiplier), but each ESS comes from
+        _compute_ess_long_invasion() instead of _compute_ess(): equilibrate each candidate
+        resident alone for `resident_years`, introduce every candidate mutant at low
+        frequency (`mutant_seed`), run `invasion_years` more (default 400, matching the
+        resident's own equilibration length so the long-run outcome — exclusion or stable
+        coexistence — is fully reached, not just an early growth-rate estimate), and read
+        off the resident's share of the population at the end via eval=6.
+
+        Args:
+            Same as plot_fig3(), plus:
+            resident_years:  Years the resident equilibrates alone before a mutant is
+                             introduced. Default 400.
+            invasion_years:  Years the two strains then compete after the mutant is
+                             introduced rare. Default 400 (matches resident_years).
+            mutant_seed:     Absolute size of the rare mutant population seeded into the
+                             flowering-infected class (If2) at the start of the invasion
+                             window. Default 1e-6.
+            results_save_path: Also stores the full resident-share matrices (not just
+                               the scalar ESS per point) so the figure can be redrawn
+                               later without rerunning any simulations.
+        """
+        if germination_values is None:
+            germination_values = np.linspace(62.5, 302.5, 9)
+        if flowering_values is None:
+            flowering_values = np.linspace(0, 365, 40)
+        if num_processes is None:
+            num_processes = cores
+
+        germination_times = np.asarray(germination_values)
+        flowering_values = np.asarray(flowering_values)
+        mult_labels = [f"{mult}×" for mult in maturity_multipliers]
+
+        def _safe(label):
+            return label.replace(' ', '_').replace('.', '').replace('(', '').replace(')', '').replace('×', 'x')
+
+        # ── Load a previous checkpoint, if compatible ───────────────────────────────
+        cached = {}
+        cached_share = {}
+        cached_germination = None
+        if results_save_path is not None and os.path.exists(results_save_path):
+            try:
+                with np.load(results_save_path, allow_pickle=False) as data:
+                    cached_germination = np.asarray(data['germination_times'])
+                    if (len(cached_germination) == len(germination_times) and
+                            np.allclose(cached_germination, germination_times)):
+                        for label in mult_labels:
+                            key = f"ess_{label}"
+                            if key in data.files:
+                                cached[label] = np.asarray(data[key]).copy()
+                            share_key = f"{_safe(label)}_share"
+                            if share_key in data.files:
+                                cached_share[label] = np.asarray(data[share_key]).copy()
+                    else:
+                        print("Checkpoint germination_values do not match; starting a fresh sweep.")
+                print(f"\nLoaded checkpoint: {results_save_path}")
+            except (FileNotFoundError, KeyError, ValueError, OSError):
+                pass
+
+        def _save_checkpoint(ess_data_partial, share_data_partial):
+            if results_save_path is None:
+                return
+            path = os.fspath(results_save_path)
+            tmp_path = path + '.tmp.npz'
+            arrays = {f"ess_{label}": vals for label, vals in ess_data_partial.items()}
+            share_arrays = {f"{_safe(label)}_share": vals for label, vals in share_data_partial.items()}
+            np.savez(tmp_path, germination_times=germination_times,
+                     mult_labels=np.array(mult_labels),
+                     resident_years=resident_years, invasion_years=invasion_years,
+                     mutant_seed=mutant_seed,
+                     **arrays, **share_arrays)
+            os.replace(tmp_path, path)
+
+        # ── Run the ESS sweep for each maturity multiplier ──────────────────────────
+        ess_data = {}
+        share_data = {}
+        for mult, label in zip(maturity_multipliers, mult_labels):
+            maturity_val = base_maturity * mult
+            print(f"\n--- m = {label} base (maturity = {maturity_val * 365:.2f} yr⁻¹)  [long invasion] ---")
+
+            ess_vals = np.full(len(germination_times), np.nan)
+            share_matrices = np.full(
+                (len(germination_times), len(flowering_values), len(flowering_values)), np.nan)
+            cached_vals = cached.get(label)
+            cached_shares = cached_share.get(label)
+            ess_data[label] = ess_vals
+            share_data[label] = share_matrices
+            for g_idx, germ_time in enumerate(germination_times):
+                if (cached_vals is not None and np.isfinite(cached_vals[g_idx]) and
+                        cached_shares is not None and g_idx < cached_shares.shape[0] and
+                        np.any(np.isfinite(cached_shares[g_idx]))):
+                    ess_vals[g_idx] = cached_vals[g_idx]
+                    share_matrices[g_idx] = cached_shares[g_idx]
+                    print(f"  germination_time = {germ_time:.1f}  "
+                          f"({g_idx + 1}/{len(germination_times)})  "
+                          f"ESS = {ess_vals[g_idx]:.2f}  (cached)")
+                    continue
+                model_kwargs = {
+                    'Bj': self.model.Bj,
+                    'Bv': self.model.Bv,
+                    'Bf': self.model.Bf,
+                    'births': self.model.births,
+                    'gamma': self.model.gamma,
+                    'death': self.model.death,
+                    'maturity': maturity_val,
+                    'g': self.model.g,
+                    'susceptible_time': self.model.susceptible_time,
+                    'infected_time': self.model.infected_time,
+                    'infected_time2': self.model.infected_time2,
+                    'germination_time': germ_time,
+                    'eval': self.model.eval,
+                    'X_0': self.model.X_0,
+                    't': self.model.t,
+                }
+                start = time.time()
+                ess, share_matrix = _compute_ess_long_invasion(
+                    model_kwargs, flowering_values, num_processes,
+                    resident_years=resident_years, invasion_years=invasion_years,
+                    mutant_seed=mutant_seed)
+                ess_vals[g_idx] = ess
+                share_matrices[g_idx] = share_matrix
+                print(f"  germination_time = {germ_time:.1f}  "
+                      f"({g_idx + 1}/{len(germination_times)})  "
+                      f"ESS = {ess:.2f}  ({time.time() - start:.1f}s)")
+
+                # Persist this point immediately so an interrupted run resumes cleanly.
+                _save_checkpoint(ess_data, share_data)
+
+        # ── Peak summary across all maturity multipliers ────────────────────────────
+        peak_info = compute_curve_peaks(germination_times, list(ess_data.values()), list(ess_data.keys()))
+        print_peak_summary("Fig 3.2", peak_info, x_label='germination day (ESS peak)')
+        self.fig3_2_peak_info = peak_info
+
+        colors = ['#2563eb', '#dc2626', '#16a34a', '#f59e0b']
+
+        # ── Publication-style rcParams ─────────────────────────────────────────────
+        plt.rcParams.update({
+            'font.family': 'sans-serif',
+            'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'font.size': 11,
+            'axes.labelsize': 12,
+            'axes.titlesize': 11,
+            'axes.linewidth': 1.2,
+            'xtick.labelsize': 10,
+            'ytick.labelsize': 10,
+            'xtick.direction': 'out',
+            'ytick.direction': 'out',
+            'xtick.major.width': 1.2,
+            'ytick.major.width': 1.2,
+            'xtick.major.size': 4,
+            'ytick.major.size': 4,
+            'legend.fontsize': 10,
+            'legend.frameon': False,
+            'lines.linewidth': 2.0,
+            'pdf.fonttype': 42,
+            'ps.fonttype': 42,
+        })
+
+        # ── Build figure ───────────────────────────────────────────────────────────
+        fig, ax = plt.subplots(figsize=figsize)
+
+        diag = np.array([germination_times[0], germination_times[-1]])
+        ax.plot(diag, diag,
+                color='#888888',
+                linewidth=1.2,
+                linestyle='--',
+                zorder=2,
+                label='ESS = germination time')
+
+        for (label, ess_vals), color in zip(ess_data.items(), colors):
+            ax.plot(germination_times, ess_vals,
+                    color=color,
+                    linewidth=2.0,
+                    marker='o',
+                    markersize=5,
+                    markeredgewidth=0.8,
+                    markeredgecolor='white',
+                    zorder=3,
+                    label=f"$m$ = {label} base")
+
+        pad = 10
+        axis_min = germination_times[0] - pad
+        axis_max = germination_times[-1] + pad
+        ax.set_xlim(axis_min, axis_max)
+        ax.set_ylim(axis_min, axis_max)
+
+        ax.set_xlabel('Germination Time (day of year)', fontsize=12)
+        ax.set_ylabel('ESS Flowering Time (day of year)', fontsize=12)
+        ax.set_title('Evolutionarily Stable Infectious Flowering Time\nvs Germination Timing'
+                      '\n(long-run invasion analysis)',
+                    fontsize=12, fontweight='bold', pad=10)
+
+        ax.xaxis.set_major_locator(plt.MultipleLocator(60))
+        ax.xaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax.yaxis.set_major_locator(plt.MultipleLocator(60))
+        ax.yaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax.tick_params(which='minor', length=2.5, width=0.8)
+
+        ax.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        ax.legend(loc='upper left', fontsize=10, frameon=False)
+
+        fig.tight_layout()
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+            print(f"\nFigure saved to: {save_path}")
+
+        plt.show()
+
+        self.fig3_2_germination_times = germination_times
+        self.fig3_2_ess_data = ess_data
+        self.fig3_2_share_data = share_data
 
         return ess_data
 
@@ -1893,3 +2328,1087 @@ class RasterModel:
         self.fig4_all_ess            = all_ess
 
         return all_ess
+
+    def plot_fig4_invasion(self, germination_values, flowering_values,
+                            model_configs, config_labels=None, colors=None,
+                            figsize=(14, 10), num_processes=None,
+                            save_path=None, dpi=300, results_save_path=None,
+                            resident_years=400, invasion_years=50, mutant_seed=1e-6):
+        """
+        True-invasion-analysis counterpart to plot_fig4().
+
+        plot_fig4() (and _compute_ess()) starts both genotypes together at
+        comparable initial abundance and reads off their long-run relative share —
+        a co-invasion / symmetric-start approximation to the ESS. This method
+        instead runs the textbook adaptive-dynamics procedure via
+        _compute_ess_invasion(): for every candidate resident strategy, let the
+        population equilibrate on its own for `resident_years`, then introduce
+        every candidate mutant strategy at low frequency (`mutant_seed`) and
+        measure whether it grows or decays over `invasion_years` while still rare.
+        The ESS is the resident strategy that resists invasion by every other
+        candidate in the grid (or comes closest to it).
+
+        Output format mirrors plot_fig4() exactly (top row: one panel per config;
+        bottom row: comparison panel) so the two methods can be compared directly.
+
+        Args:
+            germination_values, flowering_values, model_configs, config_labels,
+            colors, figsize, num_processes, save_path, dpi, results_save_path:
+                Same meaning as in plot_fig4().
+            resident_years:  Years the resident runs alone before a mutant is
+                             introduced, so the seasonally-forced system reaches
+                             its periodic attractor. Default 400 (matches the
+                             model's usual run length).
+            invasion_years:  Years the mutant is tracked after introduction, used
+                             to estimate its growth rate while still rare. Default 50.
+            mutant_seed:     Absolute size of the rare mutant population seeded
+                             into the flowering-infected class (If2) at the start
+                             of the invasion window. Default 1e-6.
+        Returns:
+            dict mapping each label to its np.array of ESS flowering-time values.
+        """
+        import matplotlib.gridspec as gridspec
+
+        def _jsonable(value):
+            if isinstance(value, np.ndarray):
+                return value.tolist()
+            if isinstance(value, (np.integer, np.floating)):
+                return value.item()
+            if isinstance(value, dict):
+                return {str(k): _jsonable(v) for k, v in sorted(value.items(), key=lambda x: str(x[0]))}
+            if isinstance(value, (list, tuple)):
+                return [_jsonable(v) for v in value]
+            return value
+
+        def _cache_key(config, label):
+            payload = {
+                'label': label,
+                'config': _jsonable(config),
+                'flowering_values': _jsonable(flowering_values),
+                'resident_years': resident_years,
+                'invasion_years': invasion_years,
+                'mutant_seed': mutant_seed,
+                'model_defaults': _jsonable({name: getattr(self.model, name) for name in (
+                    'Bj', 'Bv', 'Bf', 'births', 'gamma', 'death', 'maturity', 'g',
+                    'susceptible_time', 'infected_time', 'infected_time2', 'eval',
+                    'X_0', 't')})
+            }
+            encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+            return hashlib.sha256(encoded.encode()).hexdigest()
+
+        n_configs = len(model_configs)
+
+        if config_labels is None:
+            config_labels = [f"Config {i + 1}" for i in range(n_configs)]
+        if colors is None:
+            palette = ['#2563eb', '#dc2626', '#16a34a', '#f59e0b', '#7c3aed']
+            colors = palette[:n_configs]
+        if num_processes is None:
+            num_processes = cores
+
+        germination_values = np.asarray(germination_values)
+        flowering_values   = np.asarray(flowering_values)
+
+        def _safe(label):
+            return label.replace(' ', '_').replace('.', '').replace('(', '').replace(')', '')
+
+        cached = {}
+        cached_growth = {}
+        cached_germination = None
+        cached_meta = {}
+        if results_save_path is not None:
+            try:
+                with np.load(results_save_path, allow_pickle=False) as data:
+                    cached_germination = np.asarray(data['germination_values'])
+                    for label in config_labels:
+                        safe_label = _safe(label)
+                        if safe_label in data.files:
+                            cached[label] = np.asarray(data[safe_label]).copy()
+                        growth_key = f"{safe_label}_growth"
+                        if growth_key in data.files:
+                            cached_growth[label] = np.asarray(data[growth_key]).copy()
+                    if 'metadata' in data.files:
+                        cached_meta = json.loads(str(np.asarray(data['metadata']).item()))
+                print(f"\nLoaded checkpoint: {results_save_path}")
+            except (FileNotFoundError, KeyError, ValueError, OSError, json.JSONDecodeError):
+                pass
+
+        expected_keys = [_cache_key(config, label)
+                         for config, label in zip(model_configs, config_labels)]
+        cache_compatible = True
+        if cached_meta:
+            cache_compatible = (
+                cached_meta.get('germination_values') == _jsonable(germination_values.tolist()) and
+                cached_meta.get('cache_keys') == expected_keys)
+            print(f"Checkpoint configuration match: {'yes' if cache_compatible else 'no'}")
+            if not cache_compatible:
+                print("Checkpoint configuration does not match; starting a fresh sweep.")
+                cached = {}
+                cached_growth = {}
+        elif cached:
+            print("Checkpoint configuration match: no (metadata missing).")
+            print("Ignoring legacy cached points.")
+            cached = {}
+            cached_growth = {}
+            cache_compatible = False
+
+        def _cached_value(label, germ_time):
+            values = cached.get(label)
+            if values is None or cached_germination is None:
+                return None
+            matches = np.flatnonzero(np.isclose(cached_germination, germ_time, rtol=0, atol=1e-12))
+            if len(matches) == 0 or matches[0] >= len(values):
+                return None
+            value = float(values[matches[0]])
+            return value if np.isfinite(value) else None
+
+        def _cached_growth_matrix(label, g_idx):
+            arr = cached_growth.get(label)
+            if arr is None or g_idx >= arr.shape[0]:
+                return None
+            matrix = arr[g_idx]
+            return matrix if np.all(np.isfinite(matrix)) else None
+
+        def _save_checkpoint(all_ess, all_growth, peak_summary=None):
+            if results_save_path is None:
+                return
+            safe = {_safe(k): v for k, v in all_ess.items()}
+            growth_arrays = {f"{_safe(k)}_growth": v for k, v in all_growth.items()}
+            metadata = {'germination_values': _jsonable(germination_values.tolist()),
+                        'cache_keys': expected_keys,
+                        'resident_years': resident_years,
+                        'invasion_years': invasion_years,
+                        'mutant_seed': mutant_seed}
+            extra_arrays = {}
+            if peak_summary is not None:
+                metadata['peak_summary'] = peak_summary
+                extra_arrays = {
+                    'x_values': germination_values,
+                    'curves': np.asarray(list(all_ess.values()), dtype=float),
+                    'labels': np.array(peak_summary['labels']),
+                    'peak_days': np.asarray(peak_summary['peak_days'], dtype=float),
+                    'peak_values': np.asarray(peak_summary['peak_values'], dtype=float),
+                }
+            checkpoint_path = os.fspath(results_save_path)
+            temp_path = checkpoint_path + '.tmp.npz'
+            np.savez(temp_path, germination_values=germination_values,
+                     metadata=np.array(json.dumps(metadata)),
+                     **safe, **growth_arrays, **extra_arrays)
+            os.replace(temp_path, checkpoint_path)
+
+        # ── Compute ESS for every (config, germination_time) pair ─────────────────
+        all_ess = {}
+        all_growth = {}
+
+        for cfg_idx, (config, label) in enumerate(zip(model_configs, config_labels)):
+            print(f"\n{'='*60}")
+            print(f"Config: {label}  ({cfg_idx + 1}/{n_configs})  [true invasion analysis]")
+            print(f"{'='*60}")
+
+            ess_values = np.full(len(germination_values), np.nan)
+            growth_matrices = np.full(
+                (len(germination_values), len(flowering_values), len(flowering_values)), np.nan)
+            all_ess[label] = ess_values
+            all_growth[label] = growth_matrices
+
+            for g_idx, germ_time in enumerate(germination_values):
+                cached_ess = _cached_value(label, germ_time) if cache_compatible else None
+                cached_g = _cached_growth_matrix(label, g_idx) if cache_compatible else None
+                if cached_ess is not None and cached_g is not None:
+                    ess_values[g_idx] = cached_ess
+                    growth_matrices[g_idx] = cached_g
+                    print(f"\n  germination_time = {germ_time:.1f}  "
+                          f"({g_idx + 1}/{len(germination_values)}) — cached ESS = {cached_ess:.2f}")
+                    continue
+                print(f"\n  germination_time = {germ_time:.1f}  "
+                      f"({g_idx + 1}/{len(germination_values)})")
+
+                model_kwargs = {
+                    'Bj':              self.model.Bj,
+                    'Bv':              self.model.Bv,
+                    'Bf':              self.model.Bf,
+                    'births':          self.model.births,
+                    'gamma':           self.model.gamma,
+                    'death':           self.model.death,
+                    'maturity':        self.model.maturity,
+                    'g':               self.model.g,
+                    'susceptible_time':  self.model.susceptible_time,
+                    'infected_time':     self.model.infected_time,
+                    'infected_time2':    self.model.infected_time2,
+                    'germination_time':  germ_time,
+                    'eval':            self.model.eval,
+                    'X_0':             self.model.X_0,
+                    't':               self.model.t,
+                }
+                model_kwargs.update(config)
+                model_kwargs['germination_time'] = germ_time
+
+                start = time.time()
+                ess, growth_matrix = _compute_ess_invasion(
+                    model_kwargs, flowering_values, num_processes,
+                    resident_years=resident_years, invasion_years=invasion_years,
+                    mutant_seed=mutant_seed)
+                ess_values[g_idx] = ess
+                growth_matrices[g_idx] = growth_matrix
+                print(f"    ESS = {ess:.2f}  ({time.time() - start:.1f}s)")
+
+                # Persist this point immediately so interrupted runs resume cleanly.
+                _save_checkpoint(all_ess, all_growth)
+
+        # ── Peak summary across all configs ─────────────────────────────────────────
+        peak_info = compute_curve_peaks(germination_values, list(all_ess.values()), config_labels)
+        print_peak_summary("Fig 4 (true invasion)", peak_info, x_label='germination day (ESS peak)')
+
+        # ── Persist results ────────────────────────────────────────────────────────
+        self.fig4_invasion_results = {
+            'germination_values': germination_values,
+            **all_ess,
+        }
+        self.fig4_invasion_growth = all_growth
+        self.fig4_invasion_peak_info = peak_info
+
+        if results_save_path is not None:
+            peak_summary = {
+                'labels': peak_info['labels'],
+                'peak_days': peak_info['peak_days'].tolist(),
+                'peak_values': peak_info['peak_values'].tolist(),
+                'mean_peak_day': peak_info['mean_peak_day'],
+                'std_peak_day': peak_info['std_peak_day'],
+                'var_peak_day': peak_info['var_peak_day'],
+                'mean_peak_value': peak_info['mean_peak_value'],
+                'std_peak_value': peak_info['std_peak_value'],
+                'var_peak_value': peak_info['var_peak_value'],
+            }
+            _save_checkpoint(all_ess, all_growth, peak_summary=peak_summary)
+            print(f"\nResults saved to: {results_save_path}")
+
+        # ── Publication-style rcParams ─────────────────────────────────────────────
+        plt.rcParams.update({
+            'font.family':          'sans-serif',
+            'font.sans-serif':      ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'font.size':            11,
+            'axes.labelsize':       12,
+            'axes.titlesize':       11,
+            'axes.linewidth':       1.2,
+            'xtick.labelsize':      10,
+            'ytick.labelsize':      10,
+            'xtick.direction':      'out',
+            'ytick.direction':      'out',
+            'xtick.major.width':    1.2,
+            'ytick.major.width':    1.2,
+            'xtick.major.size':     4,
+            'ytick.major.size':     4,
+            'legend.fontsize':      10,
+            'legend.frameon':       False,
+            'lines.linewidth':      2.0,
+            'pdf.fonttype':         42,
+            'ps.fonttype':          42,
+        })
+
+        # ── Axis limits ────────────────────────────────────────────────────────────
+        pad      = 10
+        axis_min = float(germination_values[0])  - pad
+        axis_max = float(germination_values[-1]) + pad
+        diag     = np.array([germination_values[0], germination_values[-1]])
+
+        panel_letters = [chr(ord('A') + i) for i in range(n_configs + 1)]
+
+        # ── Build figure with GridSpec ─────────────────────────────────────────────
+        fig = plt.figure(figsize=figsize)
+        gs  = gridspec.GridSpec(2, n_configs, figure=fig,
+                                hspace=0.50, wspace=0.28,
+                                height_ratios=[1, 1])
+
+        # ── Top row: individual panels ─────────────────────────────────────────────
+        for col, (label, ess_vals, color, letter) in enumerate(
+                zip(config_labels, all_ess.values(), colors, panel_letters[:-1])):
+
+            ax = fig.add_subplot(gs[0, col])
+
+            ax.plot(diag, diag,
+                    color='#888888', linewidth=1.2, linestyle='--',
+                    zorder=2, label='ESS = germination time')
+
+            ax.plot(germination_values, ess_vals,
+                    color=color, linewidth=2.0,
+                    marker='o', markersize=5,
+                    markeredgewidth=0.8, markeredgecolor='white',
+                    zorder=3)
+
+            ax.set_xlim(axis_min, axis_max)
+            ax.set_ylim(axis_min, axis_max)
+            ax.xaxis.set_major_locator(plt.MultipleLocator(60))
+            ax.xaxis.set_minor_locator(plt.MultipleLocator(20))
+            ax.yaxis.set_major_locator(plt.MultipleLocator(60))
+            ax.yaxis.set_minor_locator(plt.MultipleLocator(20))
+            ax.tick_params(which='minor', length=2.5, width=0.8)
+            ax.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+            ax.text(0.04, 1.10, letter,
+                    transform=ax.transAxes,
+                    fontsize=14, fontweight='bold', va='top', ha='left')
+
+            ax.text(0.5, 1.08, label,
+                    transform=ax.transAxes,
+                    fontsize=11, ha='center', va='bottom', style='italic')
+
+            ax.set_xlabel('Germination Time (day of year)', fontsize=11)
+            if col == 0:
+                ax.set_ylabel('ESS Flowering Time (day of year)', fontsize=12)
+
+        # ── Bottom row: comparison panel (spans all columns) ──────────────────────
+        ax_comp = fig.add_subplot(gs[1, :])
+
+        ax_comp.plot(diag, diag,
+                     color='#888888', linewidth=1.2, linestyle='--',
+                     zorder=2, label='ESS = germination time')
+
+        for label, ess_vals, color in zip(config_labels, all_ess.values(), colors):
+            ax_comp.plot(germination_values, ess_vals,
+                         color=color, linewidth=2.0,
+                         marker='o', markersize=5,
+                         markeredgewidth=0.8, markeredgecolor='white',
+                         zorder=3, label=label)
+
+        ax_comp.set_xlim(axis_min, axis_max)
+        ax_comp.set_ylim(axis_min, axis_max)
+        ax_comp.xaxis.set_major_locator(plt.MultipleLocator(60))
+        ax_comp.xaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax_comp.yaxis.set_major_locator(plt.MultipleLocator(60))
+        ax_comp.yaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax_comp.tick_params(which='minor', length=2.5, width=0.8)
+        ax_comp.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+        ax_comp.spines['top'].set_visible(False)
+        ax_comp.spines['right'].set_visible(False)
+
+        ax_comp.text(0.04, 1.07, panel_letters[n_configs],
+                     transform=ax_comp.transAxes,
+                     fontsize=14, fontweight='bold', va='top', ha='left')
+        ax_comp.text(0.5, 1.05, 'Comparison',
+                     transform=ax_comp.transAxes,
+                     fontsize=11, ha='center', va='bottom')
+
+        ax_comp.set_xlabel('Germination Time (day of year)', fontsize=12)
+        ax_comp.set_ylabel('ESS Flowering Time (day of year)', fontsize=12)
+        ax_comp.legend(loc='upper left', fontsize=10, frameon=False)
+
+        fig.suptitle('True Invasion Analysis: Resident Equilibrates, '
+                      'Mutant Introduced Rare', fontsize=13, fontweight='bold', y=1.01)
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+            print(f"\nFigure saved to: {save_path}")
+
+        plt.show()
+
+        # ── Cache for downstream access ────────────────────────────────────────────
+        self.fig4_invasion_germination_values = germination_values
+        self.fig4_invasion_flowering_values   = flowering_values
+        self.fig4_invasion_model_configs      = model_configs
+        self.fig4_invasion_config_labels      = config_labels
+        self.fig4_invasion_all_ess            = all_ess
+
+        return all_ess
+
+    def plot_fig4_2(self, germination_values, flowering_values,
+                     model_configs, config_labels=None, colors=None,
+                     figsize=(8, 6), num_processes=None,
+                     save_path=None, dpi=300, results_save_path=None,
+                     resident_years=400, invasion_years=400, mutant_seed=1e-6,
+                     line_alpha=0.65):
+        """
+        Long-run-invasion counterpart to plot_fig4_invasion(), reduced to just the
+        single comparison panel ("panel D" of that figure) instead of the full
+        per-config-plus-comparison grid, with lines drawn semi-transparent
+        (`line_alpha`) so overlapping/coincident curves stay visible.
+
+        Each ESS comes from _compute_ess_long_invasion(): equilibrate each candidate
+        resident alone for `resident_years`, introduce every candidate mutant at low
+        frequency (`mutant_seed`), run `invasion_years` more (default 400, matching
+        the resident's own equilibration length so the long-run outcome is fully
+        reached), and take the resident strategy that retains the highest share even
+        against its most successful invader.
+
+        Args: same meaning as plot_fig4_invasion(), plus:
+            line_alpha: Opacity of each config's line (and its markers). Default 0.65.
+            resident_years, invasion_years, mutant_seed: see plot_fig3_2().
+            results_save_path: Also stores the full resident-share matrices (not just
+                               the scalar ESS per point) so the figure can be redrawn
+                               later (e.g. different alpha/colors) without rerunning
+                               any simulations.
+        Returns:
+            dict mapping each label to its np.array of ESS flowering-time values.
+        """
+        def _jsonable(value):
+            if isinstance(value, np.ndarray):
+                return value.tolist()
+            if isinstance(value, (np.integer, np.floating)):
+                return value.item()
+            if isinstance(value, dict):
+                return {str(k): _jsonable(v) for k, v in sorted(value.items(), key=lambda x: str(x[0]))}
+            if isinstance(value, (list, tuple)):
+                return [_jsonable(v) for v in value]
+            return value
+
+        def _safe(label):
+            return label.replace(' ', '_').replace('.', '').replace('(', '').replace(')', '')
+
+        def _cache_key(config, label):
+            payload = {
+                'label': label,
+                'config': _jsonable(config),
+                'flowering_values': _jsonable(flowering_values),
+                'resident_years': resident_years,
+                'invasion_years': invasion_years,
+                'mutant_seed': mutant_seed,
+                'model_defaults': _jsonable({name: getattr(self.model, name) for name in (
+                    'Bj', 'Bv', 'Bf', 'births', 'gamma', 'death', 'maturity', 'g',
+                    'susceptible_time', 'infected_time', 'infected_time2', 'eval',
+                    'X_0', 't')})
+            }
+            encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+            return hashlib.sha256(encoded.encode()).hexdigest()
+
+        n_configs = len(model_configs)
+        if config_labels is None:
+            config_labels = [f"Config {i + 1}" for i in range(n_configs)]
+        if colors is None:
+            palette = ['#2563eb', '#dc2626', '#16a34a', '#f59e0b', '#7c3aed']
+            colors = palette[:n_configs]
+        if num_processes is None:
+            num_processes = cores
+
+        germination_values = np.asarray(germination_values)
+        flowering_values   = np.asarray(flowering_values)
+
+        cached = {}
+        cached_share = {}
+        cached_germination = None
+        cached_meta = {}
+        if results_save_path is not None:
+            try:
+                with np.load(results_save_path, allow_pickle=False) as data:
+                    cached_germination = np.asarray(data['germination_values'])
+                    for label in config_labels:
+                        safe_label = _safe(label)
+                        if safe_label in data.files:
+                            cached[label] = np.asarray(data[safe_label]).copy()
+                        share_key = f"{safe_label}_share"
+                        if share_key in data.files:
+                            cached_share[label] = np.asarray(data[share_key]).copy()
+                    if 'metadata' in data.files:
+                        cached_meta = json.loads(str(np.asarray(data['metadata']).item()))
+                print(f"\nLoaded checkpoint: {results_save_path}")
+            except (FileNotFoundError, KeyError, ValueError, OSError, json.JSONDecodeError):
+                pass
+
+        expected_keys = [_cache_key(config, label)
+                         for config, label in zip(model_configs, config_labels)]
+        cache_compatible = True
+        if cached_meta:
+            cache_compatible = (
+                cached_meta.get('germination_values') == _jsonable(germination_values.tolist()) and
+                cached_meta.get('cache_keys') == expected_keys)
+            print(f"Checkpoint configuration match: {'yes' if cache_compatible else 'no'}")
+            if not cache_compatible:
+                print("Checkpoint configuration does not match; starting a fresh sweep.")
+                cached = {}
+                cached_share = {}
+        elif cached:
+            print("Checkpoint configuration match: no (metadata missing).")
+            cached = {}
+            cached_share = {}
+            cache_compatible = False
+
+        def _cached_value(label, germ_time):
+            values = cached.get(label)
+            if values is None or cached_germination is None:
+                return None
+            matches = np.flatnonzero(np.isclose(cached_germination, germ_time, rtol=0, atol=1e-12))
+            if len(matches) == 0 or matches[0] >= len(values):
+                return None
+            value = float(values[matches[0]])
+            return value if np.isfinite(value) else None
+
+        def _cached_share_matrix(label, g_idx):
+            arr = cached_share.get(label)
+            if arr is None or g_idx >= arr.shape[0]:
+                return None
+            matrix = arr[g_idx]
+            return matrix if np.any(np.isfinite(matrix)) else None
+
+        def _save_checkpoint(all_ess, all_share, peak_summary=None):
+            if results_save_path is None:
+                return
+            safe = {_safe(k): v for k, v in all_ess.items()}
+            share_arrays = {f"{_safe(k)}_share": v for k, v in all_share.items()}
+            metadata = {'germination_values': _jsonable(germination_values.tolist()),
+                        'cache_keys': expected_keys,
+                        'resident_years': resident_years,
+                        'invasion_years': invasion_years,
+                        'mutant_seed': mutant_seed}
+            extra_arrays = {}
+            if peak_summary is not None:
+                metadata['peak_summary'] = peak_summary
+                extra_arrays = {
+                    'x_values': germination_values,
+                    'curves': np.asarray(list(all_ess.values()), dtype=float),
+                    'labels': np.array(peak_summary['labels']),
+                    'peak_days': np.asarray(peak_summary['peak_days'], dtype=float),
+                    'peak_values': np.asarray(peak_summary['peak_values'], dtype=float),
+                }
+            checkpoint_path = os.fspath(results_save_path)
+            temp_path = checkpoint_path + '.tmp.npz'
+            np.savez(temp_path, germination_values=germination_values,
+                     metadata=np.array(json.dumps(metadata)),
+                     **safe, **share_arrays, **extra_arrays)
+            os.replace(temp_path, checkpoint_path)
+
+        # ── Compute ESS for every (config, germination_time) pair ─────────────────
+        all_ess = {}
+        all_share = {}
+
+        for cfg_idx, (config, label) in enumerate(zip(model_configs, config_labels)):
+            print(f"\n{'='*60}")
+            print(f"Config: {label}  ({cfg_idx + 1}/{n_configs})  [long invasion]")
+            print(f"{'='*60}")
+
+            ess_values = np.full(len(germination_values), np.nan)
+            share_matrices = np.full(
+                (len(germination_values), len(flowering_values), len(flowering_values)), np.nan)
+            all_ess[label] = ess_values
+            all_share[label] = share_matrices
+
+            for g_idx, germ_time in enumerate(germination_values):
+                cached_ess = _cached_value(label, germ_time) if cache_compatible else None
+                cached_s = _cached_share_matrix(label, g_idx) if cache_compatible else None
+                if cached_ess is not None and cached_s is not None:
+                    ess_values[g_idx] = cached_ess
+                    share_matrices[g_idx] = cached_s
+                    print(f"\n  germination_time = {germ_time:.1f}  "
+                          f"({g_idx + 1}/{len(germination_values)}) — cached ESS = {cached_ess:.2f}")
+                    continue
+                print(f"\n  germination_time = {germ_time:.1f}  "
+                      f"({g_idx + 1}/{len(germination_values)})")
+
+                model_kwargs = {
+                    'Bj':              self.model.Bj,
+                    'Bv':              self.model.Bv,
+                    'Bf':              self.model.Bf,
+                    'births':          self.model.births,
+                    'gamma':           self.model.gamma,
+                    'death':           self.model.death,
+                    'maturity':        self.model.maturity,
+                    'g':               self.model.g,
+                    'susceptible_time':  self.model.susceptible_time,
+                    'infected_time':     self.model.infected_time,
+                    'infected_time2':    self.model.infected_time2,
+                    'germination_time':  germ_time,
+                    'eval':            self.model.eval,
+                    'X_0':             self.model.X_0,
+                    't':               self.model.t,
+                }
+                model_kwargs.update(config)
+                model_kwargs['germination_time'] = germ_time
+
+                start = time.time()
+                ess, share_matrix = _compute_ess_long_invasion(
+                    model_kwargs, flowering_values, num_processes,
+                    resident_years=resident_years, invasion_years=invasion_years,
+                    mutant_seed=mutant_seed)
+                ess_values[g_idx] = ess
+                share_matrices[g_idx] = share_matrix
+                print(f"    ESS = {ess:.2f}  ({time.time() - start:.1f}s)")
+
+                # Persist this point immediately so interrupted runs resume cleanly.
+                _save_checkpoint(all_ess, all_share)
+
+        # ── Peak summary across all configs ─────────────────────────────────────────
+        peak_info = compute_curve_peaks(germination_values, list(all_ess.values()), config_labels)
+        print_peak_summary("Fig 4.2", peak_info, x_label='germination day (ESS peak)')
+
+        self.fig4_2_results = {'germination_values': germination_values, **all_ess}
+        self.fig4_2_share = all_share
+        self.fig4_2_peak_info = peak_info
+
+        if results_save_path is not None:
+            peak_summary = {
+                'labels': peak_info['labels'],
+                'peak_days': peak_info['peak_days'].tolist(),
+                'peak_values': peak_info['peak_values'].tolist(),
+                'mean_peak_day': peak_info['mean_peak_day'],
+                'std_peak_day': peak_info['std_peak_day'],
+                'var_peak_day': peak_info['var_peak_day'],
+                'mean_peak_value': peak_info['mean_peak_value'],
+                'std_peak_value': peak_info['std_peak_value'],
+                'var_peak_value': peak_info['var_peak_value'],
+            }
+            _save_checkpoint(all_ess, all_share, peak_summary=peak_summary)
+            print(f"\nResults saved to: {results_save_path}")
+
+        # ── Publication-style rcParams ─────────────────────────────────────────────
+        plt.rcParams.update({
+            'font.family':          'sans-serif',
+            'font.sans-serif':      ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'font.size':            11,
+            'axes.labelsize':       12,
+            'axes.titlesize':       11,
+            'axes.linewidth':       1.2,
+            'xtick.labelsize':      10,
+            'ytick.labelsize':      10,
+            'xtick.direction':      'out',
+            'ytick.direction':      'out',
+            'xtick.major.width':    1.2,
+            'ytick.major.width':    1.2,
+            'xtick.major.size':     4,
+            'ytick.major.size':     4,
+            'legend.fontsize':      10,
+            'legend.frameon':       False,
+            'lines.linewidth':      2.0,
+            'pdf.fonttype':         42,
+            'ps.fonttype':          42,
+        })
+
+        pad      = 10
+        axis_min = float(germination_values[0])  - pad
+        axis_max = float(germination_values[-1]) + pad
+        diag     = np.array([germination_values[0], germination_values[-1]])
+
+        # ── Build figure: single (former "panel D") comparison panel ───────────────
+        fig, ax_comp = plt.subplots(figsize=figsize)
+
+        ax_comp.plot(diag, diag,
+                     color='#888888', linewidth=1.2, linestyle='--',
+                     zorder=2, alpha=line_alpha, label='ESS = germination time')
+
+        for label, ess_vals, color in zip(config_labels, all_ess.values(), colors):
+            ax_comp.plot(germination_values, ess_vals,
+                         color=color, linewidth=2.0, alpha=line_alpha,
+                         marker='o', markersize=5,
+                         markeredgewidth=0.8, markeredgecolor='white',
+                         zorder=3, label=label)
+
+        ax_comp.set_xlim(axis_min, axis_max)
+        ax_comp.set_ylim(axis_min, axis_max)
+        ax_comp.xaxis.set_major_locator(plt.MultipleLocator(60))
+        ax_comp.xaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax_comp.yaxis.set_major_locator(plt.MultipleLocator(60))
+        ax_comp.yaxis.set_minor_locator(plt.MultipleLocator(20))
+        ax_comp.tick_params(which='minor', length=2.5, width=0.8)
+        ax_comp.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+        ax_comp.spines['top'].set_visible(False)
+        ax_comp.spines['right'].set_visible(False)
+
+        ax_comp.set_xlabel('Germination Time (day of year)', fontsize=12)
+        ax_comp.set_ylabel('ESS Flowering Time (day of year)', fontsize=12)
+        ax_comp.set_title('Evolutionarily Stable Infectious Flowering Time vs Germination Timing\n'
+                           '(long-run invasion analysis)', fontsize=12, fontweight='bold', pad=10)
+        ax_comp.legend(loc='upper left', fontsize=10, frameon=False)
+
+        fig.tight_layout()
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+            print(f"\nFigure saved to: {save_path}")
+
+        plt.show()
+
+        self.fig4_2_germination_values = germination_values
+        self.fig4_2_flowering_values   = flowering_values
+        self.fig4_2_model_configs      = model_configs
+        self.fig4_2_config_labels      = config_labels
+        self.fig4_2_all_ess            = all_ess
+
+        return all_ess
+
+
+def _uninvadable_band(share_matrix, flowering_values, rel_tol=1e-3, period=365.0):
+    """Find the full range of residents that are (within numerical tolerance)
+    equally uninvadable, instead of picking a single "best" one.
+
+    For a long-run-invasion share_matrix (share_matrix[i, j] = resident i's final
+    share against mutant j), the per-resident worst-case share (its outcome against
+    its most successful competitor) very often has a wide plateau near its maximum
+    rather than a single sharp peak — real mutual non-invasibility (founder control)
+    between nearby strategies, not solver noise (verified by checking pairs land near
+    1.0 in both directions). Picking one point via argmax there mostly reflects which
+    plateau member has a ~1e-6 numerical edge, not a real biological distinction.
+
+    flowering_values is a day-of-year axis and thus periodic (day `period` ≡ day 0),
+    not a plain line — a qualifying arc can straddle that seam (e.g. a band running
+    from day 350 through day 0 to day 20). Naively taking min/max of the qualifying
+    grid indices would then treat "near day 0" and "near day 365" as two separate,
+    far-apart clusters and report a midpoint on the *opposite* side of the year,
+    inside the invadable region. This is detected and unwrapped explicitly.
+
+    Returns (lo, hi, mid, worst_case, wrapped). Normally lo/hi/mid are plain values
+    in [flowering_values[0], flowering_values[-1]]. When `wrapped` is True, the arc
+    crosses the seam: lo is where it starts (late in the year) and hi = where it
+    ends (early in the year) + `period` (so hi can exceed `period`); mid is still a
+    plain value in [0, period). Callers drawing on a linear 0..period axis should,
+    when wrapped, shade [lo, period] and [0, hi - period] as two separate spans
+    rather than a single fill from lo to hi.
+    """
+    n = len(flowering_values)
+    worst_case = np.array([np.nanmin(share_matrix[i, :]) for i in range(n)])
+    if not np.any(np.isfinite(worst_case)):
+        return float('nan'), float('nan'), float('nan'), worst_case, False
+
+    best = np.nanmax(worst_case)
+    qualifies = worst_case >= best - rel_tol
+
+    # flowering_values[-1] - flowering_values[0] == period means the grid's first
+    # and last points are the *same* point on the annual cycle (e.g. day 0 and day
+    # 365) — collapse that duplicate before reasoning about contiguity/wraparound.
+    duplicate_endpoint = np.isclose(flowering_values[-1] - flowering_values[0], period)
+    eff_n = n - 1 if duplicate_endpoint else n
+    q = qualifies[:eff_n]
+
+    if not np.any(q):
+        return float('nan'), float('nan'), float('nan'), worst_case, False
+
+    if q.all():
+        lo, hi = float(flowering_values[0]), float(flowering_values[eff_n - 1])
+        return lo, hi, (lo + hi) / 2, worst_case, False
+
+    if q[0] and q[-1]:
+        # The qualifying set touches both ends of the (deduplicated) axis — a
+        # single arc wrapping across the day-0/365 seam. Walk outward from each
+        # end to find its true extent, then express it in "unwrapped" coordinates.
+        end = 0
+        while end + 1 < eff_n and q[end + 1]:
+            end += 1
+        start = eff_n - 1
+        while start - 1 >= 0 and q[start - 1]:
+            start -= 1
+        lo = float(flowering_values[start])
+        hi = float(flowering_values[end]) + period
+        mid = (lo + hi) / 2
+        if mid >= period:
+            mid -= period
+        return lo, hi, mid, worst_case, True
+
+    idx = np.flatnonzero(q)
+    lo = float(flowering_values[idx.min()])
+    hi = float(flowering_values[idx.max()])
+    return lo, hi, (lo + hi) / 2, worst_case, False
+
+
+def plot_fig3_3_bands(embedding_path, mult_labels=('1×', '2×', '4×', '8×'),
+                       flowering_values=None, rel_tol=1e-3, figsize=(7, 6),
+                       save_path=None, dpi=300):
+    """
+    Band version of plot_fig3_2(): rebuilt entirely from an already-computed
+    fig3.2 checkpoint (no resimulation), replacing each single ESS point with the
+    full range of mutually-uninvadable resident strategies at that germination
+    time (see _uninvadable_band) — plotted as a shaded ribbon per maturity
+    multiplier instead of a line, since in this model that range is often wide
+    (mutual founder control among nearby strategies), not a sharp optimum.
+
+    Args:
+        embedding_path: Path to a fig3.2 *_embedding.npz checkpoint.
+        mult_labels:    Which lines/ribbons to plot (must match saved labels).
+        flowering_values: Grid used for the sweep. Defaults to np.linspace(0,365,40).
+        rel_tol:        Tolerance (in share units) for what counts as "tied for best".
+        save_path, dpi, figsize: figure output options.
+
+    Returns:
+        dict label -> {'germination_times', 'lo', 'hi', 'mid'} arrays.
+    """
+    def _safe(label):
+        return label.replace(' ', '_').replace('.', '').replace('(', '').replace(')', '').replace('×', 'x')
+
+    if flowering_values is None:
+        flowering_values = np.linspace(0, 365, 40)
+    flowering_values = np.asarray(flowering_values)
+
+    period = 365.0
+    with np.load(os.fspath(embedding_path), allow_pickle=False) as data:
+        germination_times = np.asarray(data['germination_times'])
+        bands = {}
+        for label in mult_labels:
+            share_key = f"{_safe(label)}_share"
+            if share_key not in data.files:
+                continue
+            shares = np.asarray(data[share_key])
+            lo_vals, hi_vals, mid_vals, wrapped_vals = [], [], [], []
+            for g_idx in range(len(germination_times)):
+                lo, hi, mid, _, wrapped = _uninvadable_band(shares[g_idx], flowering_values, rel_tol)
+                lo_vals.append(lo); hi_vals.append(hi); mid_vals.append(mid); wrapped_vals.append(wrapped)
+            bands[label] = {
+                'germination_times': germination_times,
+                'lo': np.array(lo_vals), 'hi': np.array(hi_vals), 'mid': np.array(mid_vals),
+                'wrapped': np.array(wrapped_vals),
+            }
+
+    colors = ['#2563eb', '#dc2626', '#16a34a', '#f59e0b']
+    plt.rcParams.update({
+        'font.family': 'sans-serif', 'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+        'font.size': 11, 'axes.labelsize': 12, 'axes.titlesize': 11, 'axes.linewidth': 1.2,
+        'xtick.labelsize': 10, 'ytick.labelsize': 10, 'legend.fontsize': 10,
+        'legend.frameon': False, 'lines.linewidth': 2.0, 'pdf.fonttype': 42, 'ps.fonttype': 42,
+    })
+
+    fig, ax = plt.subplots(figsize=figsize)
+    germ = next(iter(bands.values()))['germination_times']
+    diag = np.array([germ[0], germ[-1]])
+    ax.plot(diag, diag, color='#888888', linewidth=1.2, linestyle='--', zorder=2,
+            label='ESS = germination time')
+
+    for (label, b), color in zip(bands.items(), colors):
+        # The band is periodic (day-of-year): a point flagged `wrapped` has its
+        # arc crossing the day-0/365 seam (lo near day 365, hi = its early-year
+        # end + period). A continuous fill_between would then draw a straight
+        # (nonsensical) interpolation wedge from that point's near-365 `lo` to a
+        # neighboring unwrapped point's near-0 `lo` — shading most of the visible
+        # axis as if it were part of the band. So wrapped points are excluded from
+        # the continuous ribbon (NaN'd out, leaving a gap there) and instead drawn
+        # as two isolated vertical segments: [lo, period] and [0, hi - period].
+        wrapped = b['wrapped']
+        lo_ribbon = np.where(wrapped, np.nan, b['lo'])
+        hi_ribbon = np.where(wrapped, np.nan, np.minimum(b['hi'], period))
+        ax.fill_between(b['germination_times'], lo_ribbon, hi_ribbon, color=color, alpha=0.28,
+                         zorder=2, linewidth=0)
+        for g, lo, hi, wr in zip(b['germination_times'], b['lo'], b['hi'], wrapped):
+            if wr:
+                ax.plot([g, g], [lo, period], color=color, alpha=0.5, linewidth=5,
+                        solid_capstyle='butt', zorder=2)
+                ax.plot([g, g], [0, hi - period], color=color, alpha=0.5, linewidth=5,
+                        solid_capstyle='butt', zorder=2)
+        ax.plot(b['germination_times'], b['mid'], color=color, linewidth=1.6, marker='o',
+                markersize=4, markeredgewidth=0.6, markeredgecolor='white', zorder=3,
+                label=f"$m$ = {label} base (band)")
+
+    pad = 10
+    axis_min, axis_max = germ[0] - pad, germ[-1] + pad
+    ax.set_xlim(axis_min, axis_max)
+    ax.set_ylim(axis_min, axis_max)
+    ax.set_xlabel('Germination Time (day of year)', fontsize=12)
+    ax.set_ylabel('Uninvadable Flowering-Time Band (day of year)', fontsize=12)
+    ax.set_title('Uninvadable Strategy Band vs Germination Timing\n(long-run invasion analysis)',
+                 fontsize=12, fontweight='bold', pad=10)
+    ax.xaxis.set_major_locator(plt.MultipleLocator(60))
+    ax.yaxis.set_major_locator(plt.MultipleLocator(60))
+    ax.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.legend(loc='upper left', fontsize=9, frameon=False)
+    fig.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        print(f"\nFigure saved to: {save_path}")
+    plt.show()
+
+    return bands
+
+
+def plot_fig4_3_bands(embedding_path, config_labels=('Basic', 'Silene latifolia', 'Dianthus pavonius'),
+                       flowering_values=None, rel_tol=1e-3, colors=None, line_alpha=0.65,
+                       band_alpha=0.22, figsize=(8, 6), save_path=None, dpi=300):
+    """
+    Band version of plot_fig4_2(): rebuilt entirely from an already-computed
+    fig4.2 checkpoint (no resimulation). Single comparison panel, one shaded
+    ribbon (+ semi-transparent midpoint line) per config, showing the full
+    uninvadable-strategy band at each germination time instead of one point.
+    """
+    def _safe(label):
+        return label.replace(' ', '_').replace('.', '').replace('(', '').replace(')', '')
+
+    if flowering_values is None:
+        flowering_values = np.linspace(0, 365, 40)
+    flowering_values = np.asarray(flowering_values)
+    if colors is None:
+        palette = ['#2563eb', '#dc2626', '#16a34a', '#f59e0b', '#7c3aed']
+        colors = palette[:len(config_labels)]
+
+    period = 365.0
+    with np.load(os.fspath(embedding_path), allow_pickle=False) as data:
+        germination_values = np.asarray(data['germination_values'])
+        bands = {}
+        for label in config_labels:
+            share_key = f"{_safe(label)}_share"
+            if share_key not in data.files:
+                continue
+            shares = np.asarray(data[share_key])
+            lo_vals, hi_vals, mid_vals, wrapped_vals = [], [], [], []
+            for g_idx in range(len(germination_values)):
+                lo, hi, mid, _, wrapped = _uninvadable_band(shares[g_idx], flowering_values, rel_tol)
+                lo_vals.append(lo); hi_vals.append(hi); mid_vals.append(mid); wrapped_vals.append(wrapped)
+            bands[label] = {
+                'germination_values': germination_values,
+                'lo': np.array(lo_vals), 'hi': np.array(hi_vals), 'mid': np.array(mid_vals),
+                'wrapped': np.array(wrapped_vals),
+            }
+
+    plt.rcParams.update({
+        'font.family': 'sans-serif', 'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+        'font.size': 11, 'axes.labelsize': 12, 'axes.titlesize': 11, 'axes.linewidth': 1.2,
+        'xtick.labelsize': 10, 'ytick.labelsize': 10, 'legend.fontsize': 10,
+        'legend.frameon': False, 'lines.linewidth': 2.0, 'pdf.fonttype': 42, 'ps.fonttype': 42,
+    })
+
+    fig, ax = plt.subplots(figsize=figsize)
+    germ = next(iter(bands.values()))['germination_values']
+    diag = np.array([germ[0], germ[-1]])
+    ax.plot(diag, diag, color='#888888', linewidth=1.2, linestyle='--', zorder=2,
+            alpha=line_alpha, label='ESS = germination time')
+
+    for (label, b), color in zip(bands.items(), colors):
+        # See plot_fig3_3_bands() — periodic axis. Wrapped points are excluded
+        # from the continuous ribbon (would otherwise interpolate a nonsensical
+        # wedge to neighboring points) and drawn as two isolated segments instead.
+        wrapped = b['wrapped']
+        lo_ribbon = np.where(wrapped, np.nan, b['lo'])
+        hi_ribbon = np.where(wrapped, np.nan, np.minimum(b['hi'], period))
+        ax.fill_between(b['germination_values'], lo_ribbon, hi_ribbon, color=color,
+                         alpha=band_alpha, zorder=2, linewidth=0)
+        for g, lo, hi, wr in zip(b['germination_values'], b['lo'], b['hi'], wrapped):
+            if wr:
+                ax.plot([g, g], [lo, period], color=color, alpha=band_alpha * 1.8,
+                        linewidth=5, solid_capstyle='butt', zorder=2)
+                ax.plot([g, g], [0, hi - period], color=color, alpha=band_alpha * 1.8,
+                        linewidth=5, solid_capstyle='butt', zorder=2)
+        ax.plot(b['germination_values'], b['mid'], color=color, linewidth=2.0, alpha=line_alpha,
+                marker='o', markersize=5, markeredgewidth=0.8, markeredgecolor='white',
+                zorder=3, label=label)
+
+    pad = 10
+    axis_min, axis_max = float(germ[0]) - pad, float(germ[-1]) + pad
+    ax.set_xlim(axis_min, axis_max)
+    ax.set_ylim(axis_min, axis_max)
+    ax.xaxis.set_major_locator(plt.MultipleLocator(60))
+    ax.yaxis.set_major_locator(plt.MultipleLocator(60))
+    ax.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.set_xlabel('Germination Time (day of year)', fontsize=12)
+    ax.set_ylabel('Uninvadable Flowering-Time Band (day of year)', fontsize=12)
+    ax.set_title('Uninvadable Strategy Band vs Germination Timing\n(long-run invasion analysis)',
+                 fontsize=12, fontweight='bold', pad=10)
+    ax.legend(loc='upper left', fontsize=10, frameon=False)
+    fig.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        print(f"\nFigure saved to: {save_path}")
+    plt.show()
+
+    return bands
+
+
+def plot_fig5_invasion_raster(embedding_path, mult_label, germination_time,
+                               flowering_values=None, save_path=None, dpi=300,
+                               figsize=(8, 7)):
+    """
+    Single stationary raster (no animation) showing one long-run-invasion share
+    matrix from a plot_fig3_2()/plot_fig4_2() checkpoint — the same style as the
+    per-frame PNGs test/plot_ess_rasters.py stitches into its GIFs, but for one
+    (config, germination_time) slice already computed and saved by fig3.2/fig4.2.
+
+    Marks the full uninvadable band (see _uninvadable_band) with a horizontal
+    shaded stripe, not a single vertical line. A vertical line marks where one
+    fixed *mutant* strategy stands against every possible resident (a different,
+    non-ESS-relevant question — that column is often mostly excluded, since a
+    strategy only reliably invades residents unlike itself; see the founder-
+    control discussion in _uninvadable_band). ESS-ness is a *row* property —
+    "does anything invade this resident" — so a horizontal band across the
+    uninvadable range is the actually-informative annotation here.
+
+    Args:
+        embedding_path:   Path to a fig3.2/fig4.2 *_embedding.npz checkpoint.
+        mult_label:       Which line's data to plot — a maturity-multiplier label
+                          for a fig3.2 embedding (e.g. "1×") or a config label for
+                          a fig4.2 embedding (e.g. "Basic"). Matched against the
+                          embedding's saved keys (both raw and "safe" forms).
+        germination_time: Which germination day's matrix to plot (must match one
+                          of the embedding's saved germination_times, within 1e-9).
+        flowering_values: The flowering-time grid used for that sweep. Must match
+                          the grid size of the saved share matrix. Defaults to
+                          np.linspace(0, 365, 40) (the pipeline's standard grid).
+        save_path:        If provided, saves the figure here (e.g. 'fig5.pdf').
+        dpi:              Resolution for saved figure. Default 300.
+        figsize:          Figure size tuple. Default (8, 7).
+
+    Returns:
+        (band_lo, band_hi, share_matrix) for the plotted slice.
+    """
+    def _safe(label):
+        return label.replace(' ', '_').replace('.', '').replace('(', '').replace(')', '').replace('×', 'x')
+
+    with np.load(os.fspath(embedding_path), allow_pickle=False) as data:
+        germination_times = np.asarray(data['germination_times'] if 'germination_times' in data.files
+                                        else data['germination_values'])
+        g_matches = np.flatnonzero(np.isclose(germination_times, germination_time, rtol=0, atol=1e-9))
+        if len(g_matches) == 0:
+            raise ValueError(f"germination_time={germination_time} not found in {embedding_path} "
+                              f"(available: {germination_times.tolist()})")
+        g_idx = int(g_matches[0])
+
+        share_key = f"{_safe(mult_label)}_share"
+        if share_key not in data.files:
+            available = [k for k in data.files if k.endswith('_share')]
+            raise KeyError(f"{share_key!r} not found in {embedding_path} (available: {available})")
+        share_matrix = np.asarray(data[share_key])[g_idx]
+
+    if flowering_values is None:
+        flowering_values = np.linspace(0, 365, 40)
+    flowering_values = np.asarray(flowering_values)
+    if share_matrix.shape != (len(flowering_values), len(flowering_values)):
+        raise ValueError(f"share_matrix shape {share_matrix.shape} doesn't match "
+                          f"flowering_values grid ({len(flowering_values)})")
+
+    band_lo, band_hi, band_mid, _, band_wrapped = _uninvadable_band(share_matrix, flowering_values)
+
+    cmap = plt.get_cmap('RdBu_r').copy()
+    cmap.set_bad('#e5e5e5')  # diagonal (resident == mutant) is never simulated
+
+    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
+    lo, hi = float(flowering_values[0]), float(flowering_values[-1])
+    image = ax.imshow(
+        share_matrix,
+        extent=(lo, hi, lo, hi),
+        origin='lower',
+        aspect='equal',
+        cmap=cmap,
+        vmin=0.0,
+        vmax=1.0,
+        interpolation='nearest',
+    )
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_xlabel('Mutant Flowering Time (day of year)', color='#2166AC')
+    ax.set_ylabel('Resident Flowering Time (day of year)', color='#B2182B')
+    ax.set_title(f"{mult_label} — long-run invasion outcome\n"
+                 f"germination time = {germination_time:g} days", fontweight='bold')
+    ax.set_xticks(np.arange(0, 366, 60))
+    ax.set_yticks(np.arange(0, 366, 60))
+    ax.grid(True, color='black', alpha=0.15, linewidth=0.5)
+    ax.axline((lo, lo), slope=1, color='black', linestyle='--', linewidth=0.8, alpha=0.5,
+              label='resident = mutant')
+    # Horizontal band: the full range of residents (rows) that resist every mutant
+    # on the grid — the actual ESS-relevant property, unlike a single vertical line.
+    # The axis is periodic (day 365 ≡ day 0), so a wrapped band (crossing that
+    # seam) is drawn as two spans instead of one straight span across the year.
+    period = 365.0
+    if band_wrapped:
+        ax.axhspan(band_lo, period, color='#16a34a', alpha=0.18, zorder=4,
+                   label=f'Uninvadable band = [{band_lo:.1f}, {band_hi - period:.1f}] (wraps at day 0)')
+        ax.axhspan(0, band_hi - period, color='#16a34a', alpha=0.18, zorder=4)
+        ax.axhline(band_hi - period, color='#16a34a', linestyle='--', linewidth=1.3, zorder=5)
+    else:
+        ax.axhspan(band_lo, band_hi, color='#16a34a', alpha=0.18, zorder=4,
+                   label=f'Uninvadable band = [{band_lo:.1f}, {band_hi:.1f}]')
+    ax.axhline(band_lo, color='#16a34a', linestyle='--', linewidth=1.3, zorder=5)
+    ax.axhline(band_hi, color='#16a34a', linestyle='--', linewidth=1.3, zorder=5)
+    ax.legend(loc='upper left', fontsize=9, frameon=True, facecolor='white', framealpha=0.85)
+    fig.colorbar(image, ax=ax, label='Resident share of population (after long-run invasion)')
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        print(f"Figure saved to: {save_path}")
+
+    plt.show()
+    return band_lo, band_hi, share_matrix

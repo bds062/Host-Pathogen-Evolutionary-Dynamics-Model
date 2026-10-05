@@ -1,0 +1,31 @@
+Dimorphism confirmation — seed 1e-06, horizons [400, 1600, 3200]
+
+2× — germination day 122.5
+  convergence-stable morph 107.1 vs partner 196.5
+    seeded partner (resident  107.1): yr 400: 0.0005  yr 1600: 0.5773  yr 3200: 0.5774
+    seeded morph   (resident  196.5): yr 400: 0.0002  yr 1600: 0.4226  yr 3200: 0.4226
+    partner share at yr 3200: 0.5774 (from morph) vs 0.5774 (from partner)  -> DIMORPHISM CONFIRMED
+
+4× — germination day 122.5
+  convergence-stable morph 96.7 vs partner 205.9
+    seeded partner (resident   96.7): yr 400: 0.0002  yr 1600: 0.5433  yr 3200: 0.5434
+    seeded morph   (resident  205.9): yr 400: 0.0007  yr 1600: 0.4566  yr 3200: 0.4566
+    partner share at yr 3200: 0.5434 (from morph) vs 0.5434 (from partner)  -> DIMORPHISM CONFIRMED
+
+8× — germination day 122.5
+  convergence-stable morph 87.0 vs partner 224.6
+    seeded partner (resident   87.0): yr 400: 0.0000  yr 1600: 0.0388  yr 3200: 0.3814
+    seeded morph   (resident  224.6): yr 400: 0.0003  yr 1600: 0.6175  yr 3200: 0.6186
+    partner share at yr 3200: 0.3814 (from morph) vs 0.3814 (from partner)  -> DIMORPHISM CONFIRMED
+
+Basic — germination day 119.0
+  convergence-stable morph 96.6 vs partner 187.2
+    seeded partner (resident   96.6): yr 400: 0.0000  yr 1600: 0.4294  yr 3200: 0.4299
+    seeded morph   (resident  187.2): yr 400: 0.0033  yr 1600: 0.5701  yr 3200: 0.5701
+    partner share at yr 3200: 0.4299 (from morph) vs 0.4299 (from partner)  -> DIMORPHISM CONFIRMED
+
+Dianthus pavonius — germination day 119.0
+  convergence-stable morph 98.4 vs partner 187.2
+    seeded partner (resident   98.4): yr 400: 0.0000  yr 1600: 0.0000  yr 3200: 0.0002
+    seeded morph   (resident  187.2): yr 400: 0.0000  yr 1600: 0.0000  yr 3200: 0.0000
+    partner share at yr 3200: 0.0002 (from morph) vs 1.0000 (from partner)  -> NOT CONFIRMED; one morph was lost; directions disagree, try more --years

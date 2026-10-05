@@ -34,3 +34,38 @@ dist/
 *.tmp
 *.swp
 *.swo
+
+# ── Local-only outputs ────────────────────────────────────────────────────────
+# Superseded figures and their embeddings are kept on disk but not in the repo;
+# README.md explains which figure supersedes which. Everything below regenerates
+# from test/figs.py.
+figs/fig3.pdf
+figs/fig3_1x.pdf
+figs/fig3.2.pdf
+figs/fig3.3.pdf
+figs/fig4.pdf
+figs/fig4.2.pdf
+figs/fig4.3.pdf
+figs/fig4_invasion.pdf
+figs/fig5.pdf
+figs/fig5.2_slow_maturation.pdf
+figs/fig3_embedding.npz
+figs/fig3_1x_embedding.npz
+figs/fig3.2_embedding.npz
+figs/fig4.2_embedding.npz
+figs/fig4_invasion_embedding.npz
+figs/fig2.6*_embedding.npz
+test/fig4.pdf
+test/fig4_ess_results.npz
+
+# Per-parameter-set raster frame dumps (~30 MB); the combined animation
+# figs/all_parameters_rasters.gif is tracked instead. Rebuild with
+# test/plot_ess_rasters.py.
+figs/our_params/
+figs/dianthus_params/
+figs/silene_params/
+
+# Cluster job logs
+slurm_logs/
+test/slurm_logs/
+figs/fig1.6.*_embedding.npz

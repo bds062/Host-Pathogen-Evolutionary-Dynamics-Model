@@ -1,0 +1,86 @@
+=== Fig 1 ===
+Generated: 2026-08-24 01:10:18
+Fig 1 — peak summary (germination day):
+  $\beta_J$ = 0.15 yr$^{-1}$ | Slow Maturation (4 yr$^{-1}$) peak germination day =   138.7   peak value = 0.1050
+  $\beta_J$ = 0.15 yr$^{-1}$ | Intermediate Maturation(8 yr$^{-1}$) peak germination day =   151.2   peak value = 0.2514
+  $\beta_J$ = 0.15 yr$^{-1}$ | Fast Maturation(16 yr$^{-1}$) peak germination day =   151.2   peak value = 0.3496
+  $\beta_J$ = 0.4 yr$^{-1}$ | Slow Maturation (4 yr$^{-1}$) peak germination day =   151.2   peak value = 0.2198
+  $\beta_J$ = 0.4 yr$^{-1}$ | Intermediate Maturation(8 yr$^{-1}$) peak germination day =   151.2   peak value = 0.3184
+  $\beta_J$ = 0.4 yr$^{-1}$ | Fast Maturation(16 yr$^{-1}$) peak germination day =   151.2   peak value = 0.3853
+  ----------------------------------------------------------------------
+  Mean peak germination day = 149.12   Std = 4.66   Var = 21.76
+  Mean peak value           = 0.2716   Std = 0.0931   Var = 0.0087
+
+=== Fig 3 ===
+Generated: 2026-08-22 04:06:49
+Fig 3 — peak summary (germination day (ESS peak)):
+  4×                                            peak germination day (ESS peak) =   302.5   peak value = 262.0513
+  8×                                            peak germination day (ESS peak) =   302.5   peak value = 262.0513
+  16×                                           peak germination day (ESS peak) =   302.5   peak value = 271.4103
+  32×                                           peak germination day (ESS peak) =   302.5   peak value = 271.4103
+  ----------------------------------------------------------------------
+  Mean peak germination day (ESS peak) = 302.50   Std = 0.00   Var = 0.00
+  Mean peak value                      = 266.7308   Std = 4.6795   Var = 21.8976
+
+=== Fig 4 (true invasion) ===
+Generated: 2026-08-22 03:15:26
+Fig 4 (true invasion) — peak summary (germination day (ESS peak)):
+  Basic                                         peak germination day (ESS peak) =   302.5   peak value = 271.4103
+  Silene latifolia                              peak germination day (ESS peak) =   302.5   peak value = 290.1282
+  Dianthus pavonius                             peak germination day (ESS peak) =   302.5   peak value = 271.4103
+  ----------------------------------------------------------------------
+  Mean peak germination day (ESS peak) = 302.50   Std = 0.00   Var = 0.00
+  Mean peak value                      = 277.6496   Std = 8.8237   Var = 77.8581
+
+=== Fig 3 (1x-8x) ===
+Generated: 2026-08-24 03:12:42
+Fig 3 (1x-8x) — peak summary (germination day (ESS peak)):
+  1×                                            peak germination day (ESS peak) =   302.5   peak value = 280.7692
+  2×                                            peak germination day (ESS peak) =   302.5   peak value = 271.4103
+  4×                                            peak germination day (ESS peak) =   302.5   peak value = 262.0513
+  8×                                            peak germination day (ESS peak) =   302.5   peak value = 262.0513
+  ----------------------------------------------------------------------
+  Mean peak germination day (ESS peak) = 302.50   Std = 0.00   Var = 0.00
+  Mean peak value                      = 269.0705   Std = 7.7601   Var = 60.2184
+
+=== Fig 3.2 (long invasion) ===
+Generated: 2026-09-05 23:57:04
+Fig 3.2 (long invasion) — peak summary (germination day (ESS peak)):
+  1×                                            peak germination day (ESS peak) =   302.5   peak value = 280.7692
+  2×                                            peak germination day (ESS peak) =   302.5   peak value = 271.4103
+  4×                                            peak germination day (ESS peak) =   302.5   peak value = 262.0513
+  8×                                            peak germination day (ESS peak) =   302.5   peak value = 262.0513
+  ----------------------------------------------------------------------
+  Mean peak germination day (ESS peak) = 302.50   Std = 0.00   Var = 0.00
+  Mean peak value                      = 269.0705   Std = 7.7601   Var = 60.2184
+
+=== Fig 4.2 (long invasion) ===
+Generated: 2026-09-06 01:36:41
+Fig 4.2 (long invasion) — peak summary (germination day (ESS peak)):
+  Basic                                         peak germination day (ESS peak) =   302.5   peak value = 271.4103
+  Silene latifolia                              peak germination day (ESS peak) =   302.5   peak value = 290.1282
+  Dianthus pavonius                             peak germination day (ESS peak) =   302.5   peak value = 271.4103
+  ----------------------------------------------------------------------
+  Mean peak germination day (ESS peak) = 302.50   Std = 0.00   Var = 0.00
+  Mean peak value                      = 277.6496   Std = 8.8237   Var = 77.8581
+
+=== Fig 3.4 (invasion fitness) ===
+Generated: 2026-09-20 20:29:10
+Fig 3.4 (invasion fitness) — peak summary (germination day (latest ESS)):
+  1×                                            peak germination day (latest ESS) =   302.5   peak value = 276.9751
+  2×                                            peak germination day (latest ESS) =   302.5   peak value = 269.3645
+  4×                                            peak germination day (latest ESS) =   302.5   peak value = 264.5939
+  8×                                            peak germination day (latest ESS) =   302.5   peak value = 264.6491
+  ----------------------------------------------------------------------
+  Mean peak germination day (latest ESS) = 302.50   Std = 0.00   Var = 0.00
+  Mean peak value                        = 268.8957   Std = 5.0506   Var = 25.5090
+
+=== Fig 4.4 (invasion fitness) ===
+Generated: 2026-09-14 23:29:32
+Fig 4.4 (invasion fitness) — peak summary (germination day (latest ESS)):
+  Basic                                         peak germination day (latest ESS) =   302.5   peak value = 269.3645
+  Silene latifolia                              peak germination day (latest ESS) =   302.5   peak value = 287.5846
+  Dianthus pavonius                             peak germination day (latest ESS) =   302.5   peak value = 268.7643
+  ----------------------------------------------------------------------
+  Mean peak germination day (latest ESS) = 302.50   Std = 0.00   Var = 0.00
+  Mean peak value                        = 275.2378   Std = 8.7339   Var = 76.2813

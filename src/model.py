@@ -213,5 +213,18 @@ class Model:
                 return ((max1 + min1) / 2) - ((max2 + min2) / 2)
             case 6:
                 return ((max1 + min1) / 2) / (((max1 + min1) / 2) + ((max2 + min2) / 2))
+            case 7:
+                # True epidemiological prevalence: infected fraction of the whole
+                # population (both genotypes combined vs. every compartment),
+                # averaged over the same end-of-run window used above so it reflects
+                # the periodic attractor rather than a single day's snapshot. Unlike
+                # case 6 (genotype 1's share of the two genotypes, meaningless when
+                # only one genotype is seeded), this is well-defined for single- or
+                # two-genotype runs alike.
+                susceptible_rows = [0, 1, 2, 6]  # Sj, Sv, Sf, Sd
+                susceptible = solution.y[susceptible_rows, :].sum(axis=0)
+                total_pop = susceptible + class1 + class2
+                window = slice(int(len(total_pop) * 0.8), len(total_pop))
+                return float(np.mean((class1[window] + class2[window]) / total_pop[window]))
             case _:
                 return 0
