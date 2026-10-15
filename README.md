@@ -21,14 +21,13 @@ infectious flowering, found by invasion analysis (Floquet exponents of a rare mu
 | `test/confirm_dimorphism.py` | Two-genotype simulations confirming each predicted polymorphism |
 | `test/realized_germination.py` | Realized germination timing and the ESS offset from median germination |
 | `test/supp_figs.py` | Supplementary Figures S1–S3 |
-| `scripts/` | SLURM wrappers for the sweeps |
 
 ## Reproducing the results
 
 ```bash
 pip install -r requirements.txt
 cd test
-python figs.py --fig sweeps          # all simulations (three invasion-fitness sweeps, ~1 h each on 32 cores)
+python figs.py --fig sweeps          # all simulations (see run times below)
 python figs.py                       # Figures 2–6 from the saved sweeps
 python confirm_dimorphism.py         # confirms the polymorphisms reported in the Results
 python realized_germination.py       # median germination day and ESS offset (Results)
@@ -36,7 +35,13 @@ python supp_figs.py                  # Figures S1–S3
 ```
 
 All output is written to `figs/`, which is not tracked. Sweeps are cached there as `.npz`
-files; delete a file to recompute it. On a SLURM cluster, `SB_ACCOUNT=<account>
-./scripts/submit.sh sweeps` runs the sweeps as one job.
+files; delete a file to recompute it. Everything runs on an ordinary desktop or laptop with
+Python ≥ 3.10, NumPy, SciPy and Matplotlib (`requirements.txt`); the simulations use every
+available core, so the three invasion-fitness sweeps take a few hours in total on a typical
+machine (about an hour each on 32 cores).
 
-Python ≥ 3.10 with NumPy, SciPy and Matplotlib (`requirements.txt`).
+![Two pathogen genotypes competing across the year](content/ess_rasters.gif)
+
+*Two pathogen genotypes with different infectious flowering times competing in the full model, for three
+parameter sets, as the germination midpoint moves through the year. Colour gives the share of infections
+carried by genotype 1; the crossing point is the flowering time that cannot be displaced.*

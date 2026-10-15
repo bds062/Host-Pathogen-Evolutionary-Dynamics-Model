@@ -45,9 +45,6 @@ test/*.log
 test/*.npz
 test/*.pdf
 
-# Cluster job logs
-slurm_logs/
-test/slurm_logs/
 
 # Manuscript drafts — never committed
 *.docx
