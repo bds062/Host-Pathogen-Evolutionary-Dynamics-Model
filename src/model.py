@@ -1,230 +1,95 @@
-# model.py
-import math
-import numpy as np
-from scipy.integrate import solve_ivp, simpson
+"""Seasonally forced, age-structured host-pathogen model (Equations 4-10 of the manuscript).
 
-from timing import (
-    floweringS, vegetatingS, floweringI, vegetatingI,
-    germination, temp
-)
+State vector X = (Sj, Sv, Sf, Ij, Iv, If, Sd, Ij2, Iv2, If2):
+  Sd            seeds
+  Sj, Sv, Sf    susceptible juvenile, vegetative and flowering plants
+  Ij, Iv, If    plants infected by pathogen genotype 1 (flowering midpoint `infected_time`)
+  Ij2, Iv2, If2 plants infected by genotype 2 (midpoint `infected_time2`); zero unless a
+                second genotype is seeded
+
+Infected plants are sterile; only healthy flowering plants produce seeds. All transmission
+is by contact with infectious flowering plants (If + If2). Juveniles additionally suffer
+density-dependent mortality gamma * N.
+"""
+import numpy as np
+from scipy.integrate import solve_ivp
+
+from parameters import FLOWERING_MIDPOINT, SILENE, X0
+from timing import floweringI, floweringS, germination, temp, vegetatingI, vegetatingS
+
+PREVALENCE, GENOTYPE_1_SHARE = 7, 6     # `eval` modes of Model.evaluate
+
 
 class Model:
+    """Parameters default to the Silene latifolia set (parameters.SILENE). Seasonal
+    timings are window midpoints (day of year): `germination_time`, `susceptible_time`
+    (healthy flowering) and `infected_time` / `infected_time2` (infectious flowering)."""
+
     def __init__(self, **kwargs):
-        #allelic invasion
-        self.X_0 = (5, 0, 0, 2.5, 0, 0, 0, 2.5, 0, 0)
-        #normal
-        # self.X_0 = (5, 0, 0, 5, 0, 0, 0, 0, 0, 0)
+        self.X_0 = X0
         self.t = (0, 365 * 400)
-        
-        #bruns et al dianthus params
-        # self.Bj = 3.38e-4      # juvenile density-dependent transmission: s * beta_d
-        # self.Bv = 3.38e-5      # vegetative adult density-dependent transmission: beta_d
-        # self.Bf = 3.38e-5      # flowering adult density-dependent transmission: beta_d
-        # self.births = 1.3/365      # b: establishment / new juvenile production from healthy flowering plants #DAY SCALED
-        # self.gamma = 1.5e-4    # k: density-dependent competition effect
-        # self.death = 0.187/365     # average of mu_f = 0.116 and mu_v = 0.258 #DAY SCALED
-        # self.maturity = 8/365    # all surviving juveniles leave Sj and enter Sv in your model #DAY SCALED, new default
-        # self.g = 2/365           # seed-to-juvenile germination/establishment over the annual step #DAY SCALED
-
-        #slowinski et al silene params
-        # self.Bj = .6/365 #(0.93+0.27)/2
-        # self.Bv = 0.4/365
-        # self.Bf = 0.4/365
-        # self.births = 8/365 #paper says 2/365
-        # self.gamma = 0.001
-        # self.death = .36/365
-        # self.maturity = .85/365 #(.7+.9)/2
-        # self.g = 2/365
-
-        #default model params
-        self.Bj = 0.2 / 365
-        self.Bv = 0.025 / 365
-        self.Bf = 0.025 / 365
-        self.births = 4 / 365
-        self.gamma = 0.0001
-        self.death = .5 / 365
-        self.maturity = 8 / 365 # new default
-        self.g = 2 / 365
-
-        self.susceptible_time = 182.5
-        self.infected_time = 182.5
-        self.infected_time2 = 182.5
-        self.germination_time = 182.5
-
-        self.eval = 6
-
+        for key, value in SILENE.items():
+            setattr(self, key, value)
+        self.susceptible_time = FLOWERING_MIDPOINT
+        self.infected_time = FLOWERING_MIDPOINT
+        self.infected_time2 = FLOWERING_MIDPOINT
+        self.germination_time = FLOWERING_MIDPOINT
+        self.eval = PREVALENCE
         for key, value in kwargs.items():
+            if not hasattr(self, key):
+                raise TypeError(f'unknown Model parameter {key!r}')
             setattr(self, key, value)
 
     def run_sim(self):
         self.solution = solve_ivp(self.df, self.t, self.X_0)
-
-        self.Sj = self.solution.y[0, :]
-        self.Sv = self.solution.y[1, :]
-        self.Sf = self.solution.y[2, :]
-        self.Ij = self.solution.y[3, :]
-        self.Iv = self.solution.y[4, :]
-        self.If = self.solution.y[5, :]
-        self.Sd = self.solution.y[6, :]
-        self.Ij2 = self.solution.y[7, :]
-        self.Iv2 = self.solution.y[8, :]
-        self.If2 = self.solution.y[9, :]
-
-        self.time_points = self.solution.t
-
         return self.solution
 
     def df(self, t, X):
         Sj, Sv, Sf, Ij, Iv, If, Sd, Ij2, Iv2, If2 = X
+        tCS = temp(t + FLOWERING_MIDPOINT - self.susceptible_time)
+        tCI = temp(t + FLOWERING_MIDPOINT - self.infected_time)
+        tCI2 = temp(t + FLOWERING_MIDPOINT - self.infected_time2)
+        tCG = temp(t + FLOWERING_MIDPOINT - self.germination_time)
+        N = Sd + Sj + Sv + Sf + Ij + Iv + If + Ij2 + Iv2 + If2
+        infectious = If + If2
 
-        susceptible_offset = 182.5 - self.susceptible_time
-        infected_offset = 182.5 - self.infected_time
-        infected_offset2 = 182.5 - self.infected_time2
-        germination_offset = 182.5 - self.germination_time
+        dSd = self.births * Sf - germination(tCG) * Sd - (self.death / 4) * Sd
+        dSj = (germination(tCG) * Sd - self.Bj * Sj * infectious - self.gamma * Sj * N
+               - self.maturity * Sj - self.death * Sj)
+        dSv = (self.maturity * Sj - self.Bv * Sv * infectious - floweringS(tCS) * Sv
+               + vegetatingS(tCS) * Sf - self.death * Sv)
+        dSf = (floweringS(tCS) * Sv - self.Bf * Sf * infectious - vegetatingS(tCS) * Sf
+               - self.death * Sf)
 
-        tCS = temp(t + susceptible_offset)
-        tCI = temp(t + infected_offset)
-        tCI2 = temp(t + infected_offset2)
-        tCG = temp(t + germination_offset)
+        dIj = self.Bj * Sj * If - self.gamma * Ij * N - self.maturity * Ij - self.death * Ij
+        dIv = (self.maturity * Ij + self.Bv * Sv * If - floweringI(tCI) * Iv
+               + vegetatingI(tCI) * If - self.death * Iv)
+        dIf = floweringI(tCI) * Iv + self.Bf * Sf * If - vegetatingI(tCI) * If - self.death * If
 
-        total_N = (
-            Sd + Sj + Sv + Sf
-            + Ij + Iv + If
-            + Ij2 + Iv2 + If2
-        )
-
-        dSd = (
-            self.births * Sf
-            - germination(tCG) * Sd
-            - (self.death / 4) * Sd
-        )
-
-        dSj = (
-            germination(tCG) * Sd
-            - self.Bj * Sj * (If + If2)
-            - self.gamma * Sj * total_N
-            - self.maturity * Sj
-            - self.death * Sj
-        )
-
-        dSv = (
-            self.maturity * Sj
-            - self.Bv * Sv * (If + If2)
-            - floweringS(tCS) * Sv
-            + vegetatingS(tCS) * Sf
-            - self.death * Sv
-        )
-
-        dSf = (
-            floweringS(tCS) * Sv
-            - self.Bf * Sf * (If + If2)
-            - vegetatingS(tCS) * Sf
-            - self.death * Sf
-        )
-
-        dIj = (
-            self.Bj * Sj * If
-            - self.gamma * Ij * total_N
-            - self.maturity * Ij
-            - self.death * Ij
-        )
-
-        dIv = (
-            self.maturity * Ij
-            + self.Bv * Sv * If
-            - floweringI(tCI) * Iv
-            + vegetatingI(tCI) * If
-            - self.death * Iv
-        )
-
-        dIf = (
-            floweringI(tCI) * Iv
-            + self.Bf * Sf * If
-            - vegetatingI(tCI) * If
-            - self.death * If
-        )
-
-        dIj2 = (
-            self.Bj * Sj * If2
-            - self.gamma * Ij2 * total_N
-            - self.maturity * Ij2
-            - self.death * Ij2
-        )
-
-        dIv2 = (
-            self.maturity * Ij2
-            + self.Bv * Sv * If2
-            - floweringI(tCI2) * Iv2
-            + vegetatingI(tCI2) * If2
-            - self.death * Iv2
-        )
-
-        dIf2 = (
-            floweringI(tCI2) * Iv2
-            + self.Bf * Sf * If2
-            - vegetatingI(tCI2) * If2
-            - self.death * If2
-        )
-
+        dIj2 = (self.Bj * Sj * If2 - self.gamma * Ij2 * N - self.maturity * Ij2
+                - self.death * Ij2)
+        dIv2 = (self.maturity * Ij2 + self.Bv * Sv * If2 - floweringI(tCI2) * Iv2
+                + vegetatingI(tCI2) * If2 - self.death * Iv2)
+        dIf2 = (floweringI(tCI2) * Iv2 + self.Bf * Sf * If2 - vegetatingI(tCI2) * If2
+                - self.death * If2)
         return (dSj, dSv, dSf, dIj, dIv, dIf, dSd, dIj2, dIv2, dIf2)
 
     def evaluate(self, solution):
-        #allelic invasion
-        class1_rows = [4, 5, 3]
-        class2_rows = [7, 8, 9]
-        #normal
-        # class1_rows = [4, 5, 3]
-        # class2_rows = [0, 1, 2]
+        """Summary statistic of a run over its final 20% (the periodic attractor).
 
-        class1 = solution.y[class1_rows, :].sum(axis=0)
-        class2 = solution.y[class2_rows, :].sum(axis=0)
-
-        max1, min1 = -math.inf, math.inf
-        max2, min2 = -math.inf, math.inf
-
-        for temp_t in range(int(len(class1) * 0.8), int(len(class1))):
-            if class1[temp_t] > max1:
-                max1 = class1[temp_t]
-            elif class1[temp_t] < min1:
-                min1 = class1[temp_t]
-            if class2[temp_t] > max2:
-                max2 = class2[temp_t]
-            elif class2[temp_t] < min2:
-                min2 = class2[temp_t]
-
-        match self.eval:
-            case 0:
-                return simpson(class1, x=solution.t)
-            case 1:
-                return simpson(class2, x=solution.t)
-            case 2:
-                return (
-                    simpson(class1, x=solution.t)
-                    / (
-                        simpson(class1, x=solution.t)
-                        + simpson(class2, x=solution.t)
-                    )
-                )
-            case 3:
-                return (max1 + min1) / 2
-            case 4:
-                return (max2 + min2) / 2
-            case 5:
-                return ((max1 + min1) / 2) - ((max2 + min2) / 2)
-            case 6:
-                return ((max1 + min1) / 2) / (((max1 + min1) / 2) + ((max2 + min2) / 2))
-            case 7:
-                # True epidemiological prevalence: infected fraction of the whole
-                # population (both genotypes combined vs. every compartment),
-                # averaged over the same end-of-run window used above so it reflects
-                # the periodic attractor rather than a single day's snapshot. Unlike
-                # case 6 (genotype 1's share of the two genotypes, meaningless when
-                # only one genotype is seeded), this is well-defined for single- or
-                # two-genotype runs alike.
-                susceptible_rows = [0, 1, 2, 6]  # Sj, Sv, Sf, Sd
-                susceptible = solution.y[susceptible_rows, :].sum(axis=0)
-                total_pop = susceptible + class1 + class2
-                window = slice(int(len(total_pop) * 0.8), len(total_pop))
-                return float(np.mean((class1[window] + class2[window]) / total_pop[window]))
-            case _:
-                return 0
+        eval == PREVALENCE:       mean infected fraction of the whole population
+        eval == GENOTYPE_1_SHARE: genotype 1's share of all infected plants, from the
+                                  midpoint of each genotype's oscillation
+        """
+        g1 = solution.y[[3, 4, 5], :].sum(axis=0)
+        g2 = solution.y[[7, 8, 9], :].sum(axis=0)
+        window = slice(int(len(g1) * 0.8), len(g1))
+        if self.eval == PREVALENCE:
+            susceptible = solution.y[[0, 1, 2, 6], :].sum(axis=0)
+            total = susceptible + g1 + g2
+            return float(np.mean((g1[window] + g2[window]) / total[window]))
+        if self.eval == GENOTYPE_1_SHARE:
+            mid1 = (g1[window].max() + g1[window].min()) / 2
+            mid2 = (g2[window].max() + g2[window].min()) / 2
+            return float(mid1 / (mid1 + mid2))
+        raise ValueError(f'unknown eval mode {self.eval}')

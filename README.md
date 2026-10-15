@@ -1,80 +1,42 @@
-# Host–Pathogen Evolutionary Dynamics Model
+# When should a pathogen strike? Navigating the landscape of birth pulses and mating season
 
-A seasonally forced model of *Silene latifolia* and anther smut, used to find the
-evolutionarily stable **infectious flowering time** and how it depends on host
-**germination timing**.
+Code for the manuscript by Bhargav D. Srinivasan, Emily L. Bruns and Samuel V. Hulse
+(Department of Biology, University of Maryland, College Park).
 
-$$\begin{align*}
-\dot{S_j} &= b(t)S_f - S_j(\beta_j I_f + \gamma N + m + \mu)\\
-\dot{S_v} &= m S_j + v(t)_s S_f - S_v(\beta_v  I_f + f(t)_s + \mu)\\
-\dot{S_f} &= f(t)_s S_v - S_f(\beta_f I_f + v(t)_s + \mu)\\
-\dot{I_j} &= \beta_j S_j I_f - I_j(m + \mu)\\
-\dot{I_v} &= m I_j + \beta_v S_v I_f  + v(t)_I I_f - I_v(f(t)_I + \mu)\\
-\dot{I_f} &= f(t)_I I_v + I_f(\beta_f S_f - v(t)_I - \mu)
-\end{align*}$$
+A seasonally forced, age-structured model of *Silene latifolia* and its anther-smut
+pathogen *Microbotryum* is used to ask how the timing of seed germination and host
+flowering shapes equilibrium disease prevalence and the evolutionarily stable timing of
+infectious flowering, found by invasion analysis (Floquet exponents of a rare mutant).
 
-<img width="852" alt="model schematic" src="https://github.com/user-attachments/assets/fd5890a1-25bb-449b-b6a3-91de70949038">
+## Contents
 
----
-
-## Competition rasters across germination times
-
-![ESS rasters animation](docs/figures/ess_rasters.gif)
-
-## Prevalence
-
-Prevalence peaks when germination precedes flowering by ~60 days. Slow maturation
-(4 yr⁻¹) drives the pathogen extinct at mistimed flowering.
-
-![prevalence vs germination](docs/figures/fig1.6.png)
-![prevalence vs flowering time](docs/figures/fig2.6.Dianthus.png)
-
-## Evolutionarily stable flowering time
-
-The ESS tracks germination with a lag and jumps between an early and a late branch near
-germination day 120.
-
-| maturation (× default 8 yr⁻¹) | species parameters |
+| Path | Purpose |
 |---|---|
-| ![fig3.4](docs/figures/fig3.4.png) | ![fig4.4](docs/figures/fig4.4.png) |
+| `src/parameters.py` | Parameter sets for *S. latifolia* (Table 1) and *D. pavonius* |
+| `src/timing.py` | Seasonal forcing (Equations 1–3) |
+| `src/model.py` | The model (Equations 4–10) and the prevalence statistic |
+| `src/plot.py` | Equilibrium-prevalence sweeps and Figures 2–3 |
+| `src/floquet.py` | Invasion fitness, singular strategies, ESS classification, and the plots of Figures 4–6 |
+| `test/figs.py` | Reproduces Figures 2–6 |
+| `test/confirm_dimorphism.py` | Two-genotype simulations confirming each predicted polymorphism |
+| `test/realized_germination.py` | Realized germination timing and the ESS offset from median germination |
+| `test/supp_figs.py` | Supplementary Figures S1–S3 |
+| `scripts/` | SLURM wrappers for the sweeps |
 
-Along the convergence-stable branch, with dimorphisms marked:
-
-| | |
-|---|---|
-| ![fig3.5](docs/figures/fig3.5.png) | ![fig4.5](docs/figures/fig4.5.png) |
-
-## Pairwise invasibility
-
-Red = the rare mutant grows. The ESS is the resident whose row is entirely blue.
-
-![PIP](docs/figures/fig5.2.png)
-
-## Polymorphism
-
-At germination day 119 some pairs are red both ways — each invades the other — so no
-flowering time is uninvadable. Confirmed by simulating the full model from both
-directions (`figs/dimorphism_checks.txt`).
-
-![PIP at both germination times](docs/figures/fig6.png)
-
-Same data by outcome: red = genotype 1 wins, blue = genotype 2 wins, white = coexistence.
-
-![competitive outcome](docs/figures/fig7.png)
-
----
-
-## Running
+## Reproducing the results
 
 ```bash
 pip install -r requirements.txt
 cd test
-python figs.py --list            # figure keys
-python figs.py --fig 6 7         # redraw from cached embeddings (seconds)
-python figs.py --fig 3_4         # full invasion-fitness sweep (~1 h on 32 cores)
+python figs.py --fig sweeps          # all simulations (three invasion-fitness sweeps, ~1 h each on 32 cores)
+python figs.py                       # Figures 2–6 from the saved sweeps
+python confirm_dimorphism.py         # confirms the polymorphisms reported in the Results
+python realized_germination.py       # median germination day and ESS offset (Results)
+python supp_figs.py                  # Figures S1–S3
 ```
 
-On a cluster: `SB_ACCOUNT=myacct ./scripts/submit.sh 3_4`
+All output is written to `figs/`, which is not tracked. Sweeps are cached there as `.npz`
+files; delete a file to recompute it. On a SLURM cluster, `SB_ACCOUNT=<account>
+./scripts/submit.sh sweeps` runs the sweeps as one job.
 
-`src/` model, seasonal forcing, plotting, invasion fitness (`floquet.py`) ·
-`test/` figure and confirmation scripts · `figs/` outputs
+Python ≥ 3.10 with NumPy, SciPy and Matplotlib (`requirements.txt`).

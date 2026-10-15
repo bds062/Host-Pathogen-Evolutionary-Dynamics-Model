@@ -1,7 +1,7 @@
 """
-Confirm by direct simulation that the dimorphisms drawn in figs 3.5/4.5 are real.
+Confirm by direct simulation that the predicted polymorphisms are real.
 
-The Floquet sweeps (floquet.py, figs 3.4/4.4) flag a germination time as having no
+The invasion-fitness sweeps (figs.py --fig sweeps) flag a germination time as having no
 globally uninvadable strategy whenever the convergence-stable flowering time x* can be
 invaded by a distant mutant y that can also be invaded back:
 
@@ -20,12 +20,14 @@ exactly the artefact that the old share-after-400-years ESS metric suffered from
 Checkpoints are therefore reported at several horizons, so a run that has not yet
 converged is visible rather than silently wrong.
 
+The manuscript's confirmations (seed 0.001, checkpoints at 6,000 and 18,000 years) are
+the defaults; the report is written to figs/polymorphism_checks.txt.
+
 Usage:
-    python confirm_dimorphism.py                       # every flagged case, both embeddings
-    python confirm_dimorphism.py --embedding fig3.4    # just the maturity sweep
-    python confirm_dimorphism.py --config Basic --germination 119
-    python confirm_dimorphism.py --pair 93.6 187.2 --config Basic --germination 119
-    python confirm_dimorphism.py --years 1600 --out ../figs/dimorphism_checks.txt
+    python confirm_dimorphism.py                          # every flagged case, all sweeps
+    python confirm_dimorphism.py --embedding maturation   # just one sweep
+    python confirm_dimorphism.py --config 'Dianthus pavonius' --germination 119
+    python confirm_dimorphism.py --pair 93.4 252.7 --config '2×' --germination 119
 """
 import argparse
 import json
@@ -37,6 +39,7 @@ from pathlib import Path
 TEST_DIR = Path(__file__).resolve().parent
 REPO_DIR = TEST_DIR.parent
 FIGS_DIR = REPO_DIR / 'figs'
+FIGS_DIR.mkdir(exist_ok=True)
 sys.path.append(str(REPO_DIR / 'src'))
 
 import multiprocessing as mp
@@ -48,9 +51,11 @@ from model import Model
 from floquet import (PERIOD, coexistence_partners, css_track, equilibrate_resident,
                      safe_label)
 
-EMBEDDINGS = {'fig3.4': FIGS_DIR / 'fig3.4_embedding.npz',
-              'fig4.4': FIGS_DIR / 'fig4.4_embedding.npz'}
-DEFAULT_YEARS = (400, 1600, 3200)
+EMBEDDINGS = {'maturation': FIGS_DIR / 'sweep_maturation.npz',       # S. latifolia, 1x/2x m
+              'susceptibility': FIGS_DIR / 'sweep_susceptibility.npz',  # S. latifolia, 1.5:1-12:1
+              'species': FIGS_DIR / 'sweep_species.npz'}               # S. latifolia vs D. pavonius
+DEFAULT_YEARS = (6000, 18000)
+DEFAULT_SEED = 1e-3
 SHARE_TOL = 1e-3          # how closely the two directions must agree to pass
 
 try:
@@ -119,7 +124,7 @@ def _direction(args):
                  'eq_residual': resid, 'checkpoints': out}
 
 
-def confirm(cases, years=DEFAULT_YEARS, seed=1e-6, num_processes=None):
+def confirm(cases, years=DEFAULT_YEARS, seed=DEFAULT_SEED, num_processes=None):
     """Run both directions of every case (in parallel across directions)."""
     tasks = []
     for n, (label, germ, x_star, partner, cfg) in enumerate(cases):
@@ -170,26 +175,26 @@ def report(cases, results, years, tol=SHARE_TOL):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Simulate the dimorphisms flagged in figs 3.5/4.5 to confirm they are real.")
+        description="Simulate each predicted polymorphism with the full two-genotype model.")
     parser.add_argument('--embedding', nargs='+', choices=sorted(EMBEDDINGS),
                         default=sorted(EMBEDDINGS), help="Which sweep(s) to read cases from.")
-    parser.add_argument('--config', help="Only this config label (e.g. Basic, '2×').")
+    parser.add_argument('--config', help="Only this config label (e.g. '2×', 'Dianthus pavonius').")
     parser.add_argument('--germination', type=float, help="Only this germination day.")
     parser.add_argument('--pair', nargs=2, type=float, metavar=('X', 'Y'),
                         help="Force this flowering-time pair instead of the sweep's choice.")
     parser.add_argument('--years', nargs='+', type=int, default=list(DEFAULT_YEARS),
                         help=f"Checkpoint horizons in years (default {list(DEFAULT_YEARS)}).")
-    parser.add_argument('--seed', type=float, default=1e-6, help="Rare-invader seed (If2).")
+    parser.add_argument('--seed', type=float, default=DEFAULT_SEED, help="Rare-invader seed (If2).")
     parser.add_argument('--processes', type=int, default=NUM_PROCESSES)
-    parser.add_argument('--out', help="Also write the report to this path.")
+    parser.add_argument('--out', default=str(FIGS_DIR / 'polymorphism_checks.txt'),
+                        help="Write the report here.")
     args = parser.parse_args()
 
     cases = []
     for name in args.embedding:
         path = EMBEDDINGS[name]
         if not path.exists():
-            print(f"{path} not found — run figs.py --fig {name.replace('fig', '').replace('.', '_')}"
-                  " first.")
+            print(f"{path} not found — run figs.py --fig {name} first.")
             continue
         found = flagged_cases(path, args.config, args.germination,
                               args.pair[1] if args.pair else None)

@@ -1,6 +1,6 @@
 # floquet.py
 """
-Invasion fitness via Floquet exponents (figs 3.4, 4.4, 5.2).
+Invasion fitness via Floquet exponents: the evolutionary analysis (Figures 4-6).
 
 While genotype 2 is rare, its infected classes (Ij2, Iv2, If2) obey a LINEAR
 system whose coefficients depend only on the resident's annual cycle
@@ -34,6 +34,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import brentq
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 from matplotlib.colors import SymLogNorm
 
 from model import Model
@@ -398,7 +399,13 @@ def css_track(germ, sing_x, sing_kind):
 
 def plot_floquet_ess(embedding_path, labels=None, legend_fmt='{}', colors=None,
                      line_alpha=1.0, figsize=(7, 6), title=None, save_path=None, dpi=300,
-                     label_map=None, connect_css=False, show_coexistence=False):
+                     label_map=None, connect_css=False, show_coexistence=False,
+                     xlabel='Germination Time (day of year)', ylabel=None, unconfirmed=(),
+                     diag_label='ESS = germination time',
+                     coexist_labels=('dimorphism: first morph (no single ESS here)',
+                                     'dimorphism: flowering times it coexists with',
+                                     'no single ESS; coexistence not confirmed by simulation'),
+                     ax=None, legend_loc='upper left'):
     """ESS flowering time vs germination time, one line per label.
     Filled markers/line: ESS. Open circles: branching points. Crosses: local-only ESS.
 
@@ -408,6 +415,9 @@ def plot_floquet_ess(embedding_path, labels=None, legend_fmt='{}', colors=None,
                  curve is unbroken where no global ESS exists (crosses mark those points).
     show_coexistence: at those germination times, also draw the flowering times that
                  form a protected dimorphism with the convergence-stable strategy.
+    unconfirmed: (label, germination) pairs whose predicted dimorphism failed the direct
+                 two-direction simulation (test/confirm_dimorphism.py). These get an open
+                 square and no partner bar: no single ESS, but no confirmed coexistence.
     """
     with np.load(os.fspath(embedding_path), allow_pickle=False) as data:
         germ = np.asarray(data['germination_values'])
@@ -422,10 +432,13 @@ def plot_floquet_ess(embedding_path, labels=None, legend_fmt='{}', colors=None,
     if colors is None:
         colors = ['#2563eb', '#dc2626', '#16a34a', '#f59e0b', '#7c3aed']
 
-    _rc()
-    fig, ax = plt.subplots(figsize=figsize)
+    if ax is None:   # otherwise draw into the caller's panel; the caller saves the figure
+        _rc()
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = None
     ax.plot([germ[0], germ[-1]], [germ[0], germ[-1]], color='#888888', linewidth=1.2,
-            linestyle='--', zorder=1, label='ESS = germination time')
+            linestyle='--', zorder=1, label=diag_label)
     dodge_step = 3.0  # nudge each config's dimorphism bar so overlapping ones stay visible
     for k, ((label, d), color) in enumerate(zip(loaded.items(), colors)):
         y = d['css'] if connect_css else d['ess']
@@ -451,6 +464,11 @@ def plot_floquet_ess(embedding_path, labels=None, legend_fmt='{}', colors=None,
             # a pair. Open circle = the convergence-stable morph, bar = the flowering
             # times it coexists with (the second morph).
             for g in np.flatnonzero(np.isfinite(d['css']) & ~d['css_global']):
+                if any(l == label and abs(gu - germ[g]) < 0.5 for l, gu in unconfirmed):
+                    ax.plot([germ[g]], [d['css'][g]], linestyle='none', marker='s',
+                            markersize=6, markerfacecolor='white', markeredgecolor=color,
+                            markeredgewidth=1.6, alpha=line_alpha, zorder=5)
+                    continue
                 partners = coexistence_partners(d['invasion'][g], flow, d['css'][g])
                 if not len(partners):
                     continue
@@ -482,9 +500,14 @@ def plot_floquet_ess(embedding_path, labels=None, legend_fmt='{}', colors=None,
     if show_coexistence:
         handles.append(plt.Line2D([], [], linestyle='none', marker='o', color='k',
                                   markerfacecolor='white', markeredgewidth=1.6, markersize=7))
-        texts.append('dimorphism: first morph (no single ESS here)')
+        texts.append(coexist_labels[0])
         handles.append(plt.Line2D([], [], color='k', alpha=0.45, linewidth=7))
-        texts.append('dimorphism: flowering times it coexists with')
+        texts.append(coexist_labels[1])
+        if unconfirmed:
+            handles.append(plt.Line2D([], [], linestyle='none', marker='s', color='k',
+                                      markerfacecolor='white', markeredgewidth=1.6,
+                                      markersize=7))
+            texts.append(coexist_labels[2])
     ax.set_xlim(germ[0] - 10, germ[-1] + 10)
     ax.set_ylim(0, PERIOD)
     ax.xaxis.set_major_locator(plt.MultipleLocator(60))
@@ -492,13 +515,16 @@ def plot_floquet_ess(embedding_path, labels=None, legend_fmt='{}', colors=None,
     ax.grid(True, linestyle=':', linewidth=0.7, alpha=0.5, zorder=0)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.set_xlabel('Germination Time (day of year)')
-    ax.set_ylabel(('Convergence-Stable' if connect_css else 'ESS')
-                  + ' Flowering Time (day of year)')
-    ax.set_title(title or 'Evolutionarily Stable Infectious Flowering Time\nvs Germination Timing'
-                          '\n(invasion fitness, Floquet exponent)',
-                 fontsize=12, fontweight='bold', pad=10)
-    ax.legend(handles, texts, loc='upper left', fontsize=9, frameon=False)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel or (('Convergence-Stable' if connect_css else 'ESS')
+                             + ' Flowering Time (day of year)'))
+    if title is not False:  # title=False: no title (paper figures carry it in the caption)
+        ax.set_title(title or 'Evolutionarily Stable Infectious Flowering Time\nvs Germination Timing'
+                              '\n(invasion fitness, Floquet exponent)',
+                     fontsize=12, fontweight='bold', pad=10)
+    ax.legend(handles, texts, loc=legend_loc, fontsize=9, frameon=False)
+    if fig is None:
+        return loaded
     fig.tight_layout()
     if save_path is not None:
         fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
@@ -526,8 +552,9 @@ def outcome_matrix(S):
         return np.where((a > 0) & (b > 0), 0.0, (a - b) / 2)
 
 
-def _raster_panel(ax, values, flow, sing_x, sing_kind, cmap, norm, contour=None):
-    """One invasion raster on the resident x mutant plane (figs 5.2 and 6).
+def _raster_panel(ax, values, flow, sing_x, sing_kind, cmap, norm, contour=None,
+                  label_strategies=True):
+    """One invasion raster on the resident x mutant plane (Figures 4 and 6B).
 
     Draws the grid itself, the neutral diagonal and the singular strategies; the caller
     supplies the colour mapping (continuous invasion fitness, or the mutual-invasibility
@@ -540,15 +567,21 @@ def _raster_panel(ax, values, flow, sing_x, sing_kind, cmap, norm, contour=None)
     if contour is not None:
         ax.contour(flow, flow, contour, levels=[0.0], colors='k', linewidths=1.0)
     ax.axline((0, 0), (1, 1), color='k', linewidth=0.6, alpha=0.5)
+    # a white halo keeps the strategy lines readable over both deep red and deep blue
+    halo = [pe.withStroke(linewidth=3.2, foreground='white')]
+    n_local = 0  # stagger local-strategy labels so neighbouring ones don't overlap
     for x, k in zip(sing_x, sing_kind):
         if k == KIND_CODES['ESS']:
-            ax.axhline(x, color='k', linestyle='--', linewidth=1.5)
-            ax.axvline(x, color='k', linestyle='--', linewidth=1.5)
-            ax.text(x + 4, 6, f'ESS = {x:.1f}', fontsize=10, fontweight='bold')
+            for line in (ax.axhline, ax.axvline):
+                line(x, color='k', linestyle='--', linewidth=1.6, path_effects=halo)
+            if label_strategies:
+                ax.text(x + 4, 6, f'ESS = {x:.1f}', fontsize=10, fontweight='bold')
         elif k in (KIND_CODES['branching'], KIND_CODES['local ESS']):
-            ax.axhline(x, color='#555555', linestyle=':', linewidth=1.2)
-            ax.axvline(x, color='#555555', linestyle=':', linewidth=1.2)
-            ax.text(x + 4, 20, f'{KIND_NAMES[int(k)]} = {x:.1f}', fontsize=9)
+            for line in (ax.axhline, ax.axvline):
+                line(x, color='k', linestyle=':', linewidth=1.6, path_effects=halo)
+            if label_strategies:
+                ax.text(x + 4, 20 + 18 * n_local, f'{KIND_NAMES[int(k)]} = {x:.1f}', fontsize=9)
+            n_local += 1
     ax.set_xlim(0, PERIOD)
     ax.set_ylim(0, PERIOD)
     ax.set_xlabel('Mutant (invader) flowering time (day of year)')
@@ -573,8 +606,13 @@ def _load_raster(embedding_path, label, germination_time):
 
 def plot_floquet_pip(embedding_path, label, germination_time, linthresh=1e-4,
                      figsize=None, save_path=None, dpi=300, display_label=None,
-                     outcome=False):
+                     outcome=False, title_name=None, xlabel=None, ylabel=None,
+                     panel_fmt='Germination day {:.1f}', suptitle=True, cbar_label=None,
+                     strategies_in_title=False, panel_letters=False, fig=None, axes=None):
     """Pairwise invasibility plot: invasion fitness s(resident y-axis, mutant x-axis).
+
+    `fig` and `axes` (one axis per germination time) draw into an existing figure, e.g. a
+    subfigure of a composite; the caller then saves it.
 
     `germination_time` may be a list, giving one panel per germination day on a shared
     colour scale. outcome=True plots outcome_matrix() instead: the same red/blue
@@ -592,20 +630,44 @@ def plot_floquet_pip(embedding_path, label, germination_time, linthresh=1e-4,
 
     _rc()
     n = len(panels)
-    fig, axes = plt.subplots(1, n, figsize=figsize or ((8, 7) if n == 1 else (6.6 * n, 6.2)),
-                             squeeze=False)
+    external = axes is not None
+    if external:
+        axes = np.asarray(axes).reshape(1, -1)
+    else:
+        fig, axes = plt.subplots(1, n, figsize=figsize or ((8, 7) if n == 1 else (6.6 * n, 6.2)),
+                                 squeeze=False)
     for ax, (S, flow, g, sing_x, sing_kind) in zip(axes[0], panels):
         im = _raster_panel(ax, S, flow, sing_x, sing_kind, cmap, norm,
-                           contour=None if outcome else S)
+                           contour=None if outcome else S,
+                           label_strategies=not strategies_in_title)
         if outcome:  # no resident/mutant roles left once the plot is symmetric
             ax.set_xlabel('Genotype 1 flowering time (day of year)')
             ax.set_ylabel('Genotype 2 flowering time (day of year)')
-        if n > 1:
-            ax.set_title(f'Germination day {g:.1f}', fontsize=11, fontweight='bold')
-    name = 'Competitive outcome' if outcome else 'Pairwise invasibility plot'
+        if xlabel:
+            ax.set_xlabel(xlabel)
+        if ylabel:
+            ax.set_ylabel(ylabel)
+        if n > 1 and ax is not axes[0, 0]:
+            ax.set_ylabel('')            # shared y-axis label on the first panel only
+        if strategies_in_title:  # name the strategies above the panel, not on the raster
+            ess = [x for x, k in zip(sing_x, sing_kind) if k == KIND_CODES['ESS']]
+            loc = [x for x, k in zip(sing_x, sing_kind)
+                   if k in (KIND_CODES['branching'], KIND_CODES['local ESS'])]
+            line2 = (f'ESS = day {ess[0]:.0f} (dashed)' if ess else
+                     'No single ESS; local ESS = days '
+                     + ', '.join(f'{x:.0f}' for x in loc) + ' (dotted)')
+            ax.set_title(panel_fmt.format(g) + '\n' + line2, fontsize=11)
+        elif n > 1:
+            ax.set_title(panel_fmt.format(g), fontsize=11, fontweight='bold')
+        if panel_letters:  # A, B, ... outside the top-left corner of each panel
+            ax.text(-0.2, 1.16, 'ABCD'[list(axes[0]).index(ax)], transform=ax.transAxes,
+                    fontsize=14, fontweight='bold', ha='left', va='bottom')
+    name = title_name or ('Competitive outcome' if outcome else 'Pairwise invasibility plot')
     subtitle = ('red = genotype 1 wins, blue = genotype 2 wins, white = they coexist'
                 if outcome else 'invasion fitness (per year; red = invader grows)')
-    if n == 1:
+    if not suptitle:
+        pass
+    elif n == 1:
         axes[0, 0].set_title(f'{name} — {display_label or label}, '
                              f'germination day {panels[0][2]:.1f}\n{subtitle}',
                              fontsize=12, fontweight='bold', pad=10)
@@ -613,8 +675,12 @@ def plot_floquet_pip(embedding_path, label, germination_time, linthresh=1e-4,
         fig.suptitle(f'{name} — {display_label or label}\n{subtitle}',
                      fontsize=12, fontweight='bold')
     cbar = fig.colorbar(im, ax=axes[0, 0] if n == 1 else axes[0].tolist(), shrink=0.8)
-    cbar.set_label(('Winner and margin; 0 = coexistence' if outcome
-                    else 'Invasion fitness s') + ' (yr$^{-1}$, symlog)')
+    cbar.set_label(cbar_label or (('Winner and margin; 0 = coexistence' if outcome
+                                   else 'Invasion fitness s') + ' (per year, symlog)'))
+    cbar.ax.yaxis.set_major_formatter(  # plain decimals (0.001) rather than 10^-3
+        plt.FuncFormatter(lambda v, _: '0' if v == 0 else f'{v:g}'))
+    if external:
+        return [S for S, *_ in panels]
     if n == 1:
         fig.tight_layout()
     if save_path is not None:
